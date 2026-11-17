@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..deps import current_user, require_admin
+from ..deps import current_user, require_admin, verified_email
 from ..models import (Consultation, ConsultStatus, Payment, PROFESSIONAL_ROLES, Role, Settlement, Subscription, User, WebhookEvent)
 from ..services import payments as svc
 from ..services.paystack import PaystackError, verify_webhook_signature
@@ -23,7 +23,7 @@ class CheckoutIn(BaseModel):
 
 @router.post("/checkout", status_code=201)
 def checkout(body: CheckoutIn, idempotency_key: str = Header(min_length=8, max_length=80),
-             u: User = Depends(current_user), db: Session = Depends(get_db)):
+             u: User = Depends(verified_email), db: Session = Depends(get_db)):
     consult = None
     if body.purpose == "patient_subscription" and u.role != Role.patient:
         raise HTTPException(403, "Patients only")
@@ -41,7 +41,7 @@ def checkout(body: CheckoutIn, idempotency_key: str = Header(min_length=8, max_l
         raise HTTPException(400, str(e))
     db.commit()
     return {"reference": p.reference, "amount_pesewas": p.amount_pesewas, "currency": p.currency,
-            "status": p.status.value, "checkout_url": url}
+            "status": p.status.value, "checkout_url": url or p.checkout_url}
 
 
 @router.post("/dev/simulate/{reference}")

@@ -10,6 +10,32 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./medcart.db"  # use postgresql+psycopg://... in production
     redis_url: str = "redis://localhost:6379/0"
 
+    # Security
+    cors_origins: list[str] = ["http://localhost:5173"]
+    data_encryption_keys: str = ""  # comma-separated Fernet keys, newest first (required in production)
+    require_verified_email: bool = True
+    rate_limit_enabled: bool = True
+    trust_proxy_headers: bool = False  # set true only behind a proxy that sets X-Forwarded-For
+
+    # Storage
+    upload_dir: str = "./uploads"
+    max_upload_mb: int = 10
+
+    # Realtime calls (WebRTC). Production needs a TURN server for users behind strict NATs/mobile networks.
+    stun_urls: list[str] = ["stun:stun.l.google.com:19302"]
+    turn_urls: list[str] = []
+    turn_username: str = ""
+    turn_credential: str = ""
+    turn_secret: str = ""  # coturn `static-auth-secret`: enables short-lived per-call TURN credentials
+
+    # Language services (Google Cloud REST; any provider can implement services/language.py::Provider)
+    google_api_key: str = ""
+    language_provider: str = "none"  # none | google
+
+    timezone: str = "Africa/Accra"  # medication reminder times are interpreted in this zone
+    scheduler_enabled: bool = False
+    scheduler_interval_seconds: int = 900
+
     # Auth
     jwt_secret: str = "CHANGE-ME-in-production"
     access_token_minutes: int = 30

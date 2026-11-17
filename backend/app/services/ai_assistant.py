@@ -31,14 +31,14 @@ def _call_llm(system: str, history: list[dict]) -> str:
     return "".join(b.get("text", "") for b in r.json()["content"])
 
 
-def respond(history: list[dict], lang: str, country: str = "GH") -> dict:
+def respond(history: list[dict], lang: str, country: str = "GH", extra_screen_text: str | None = None) -> dict:
     """history: [{role: user|assistant, content: str}] with the newest user turn last."""
     s = get_settings()
     number = s.emergency_numbers.get(country, "112")
     latest = history[-1]["content"]
     # Screen the whole recent user text, not just the last turn: symptoms may be revealed gradually.
     user_text = " ".join(m["content"] for m in history[-6:] if m["role"] == "user")
-    if ai_safety.screen_emergency(user_text):
+    if ai_safety.screen_emergency(user_text) or (extra_screen_text and ai_safety.screen_emergency(extra_screen_text)):
         return {"emergency": True, "reply": ai_safety.emergency_message(lang, number), "care_level": "emergency",
                 "llm_used": False, "emergency_number": number}
     foot = ai_safety.footer(lang, number)

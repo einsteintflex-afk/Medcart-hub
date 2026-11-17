@@ -1,14 +1,16 @@
-from datetime import timedelta
+from datetime import date, timedelta
+from typing import Annotated, Literal
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db, utcnow
 from ..deps import current_user
+from ..ratelimit import limit
 from ..models import (Credential, OneTimeToken, PatientProfile, PROFESSIONAL_ROLES, ProviderProfile, Role, User)
 from ..security import (create_token, decode_token, hash_password, hash_token, new_opaque_token, new_otp,
                         validate_password_strength, verify_password)
@@ -16,34 +18,57 @@ from ..services.audit import audit
 from ..services.notifications import notify
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+_DUMMY_HASH = hash_password("dummy-password-for-timing")
 SUPPORTED_LANGS = {"en", "tw", "ha", "fat", "fr", "es"}
+
+
+_PHONE = r"^\+?[0-9 ()-]{7,20}$"
+Short = Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)]
+Medium = Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
+Long = Annotated[str, StringConstraints(strip_whitespace=True, max_length=4000)]
+Country = Annotated[str, StringConstraints(pattern=r"^[A-Z]{2}$")]
+ShortList = Annotated[list[Short], Field(max_length=50)]
+
+
+class CredentialIn(BaseModel):
+    kind: Annotated[str, StringConstraints(max_length=40, min_length=1)]
+    issuer: Medium
+    number: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    document_key: Annotated[str, StringConstraints(max_length=64)] | None = None
 
 
 class RegisterIn(BaseModel):
     email: EmailStr
-    phone: str | None = None
-    password: str
+    phone: Annotated[str, StringConstraints(pattern=_PHONE)] | None = None
+    password: Annotated[str, StringConstraints(max_length=200)]
     role: Role
-    full_name: str
+    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
     preferred_language: str = "en"
-    preferred_channel: str = "email"
+    preferred_channel: Literal["email", "sms"] = "email"
     # patient
-    date_of_birth: str | None = None
-    sex: str | None = None
-    country: str = "GH"
-    region: str | None = None
-    city: str | None = None
-    emergency_contact_name: str | None = None
-    emergency_contact_phone: str | None = None
-    medical_history: str | None = None
-    allergies: list[str] = []
-    current_medications: list[str] = []
+    date_of_birth: date | None = None
+    sex: Literal["female", "male", "other", "unspecified"] | None = None
+    country: Country = "GH"
+    region: Short | None = None
+    city: Short | None = None
+    emergency_contact_name: Medium | None = None
+    emergency_contact_phone: Annotated[str, StringConstraints(pattern=_PHONE)] | None = None
+    medical_history: Long | None = None
+    allergies: ShortList = []
+    current_medications: ShortList = []
     # professional
-    specialty: str | None = None
-    qualifications: str | None = None
-    years_experience: int = 0
-    languages: list[str] = []
-    credentials: list[dict] = []  # [{kind, issuer, number, document_key?}]
+    specialty: Short | None = None
+    qualifications: Annotated[str, StringConstraints(max_length=2000)] | None = None
+    years_experience: Annotated[int, Field(ge=0, le=70)] = 0
+    languages: ShortList = []
+    credentials: Annotated[list[CredentialIn], Field(max_length=10)] = []
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def dob(cls, v):
+        if v and not (date(1900, 1, 1) <= v <= date.today()):
+            raise ValueError("date of birth out of range")
+        return v
 
     @field_validator("password")
     @classmethod
@@ -55,6 +80,13 @@ class RegisterIn(BaseModel):
     @classmethod
     def lang(cls, v):
         if v not in SUPPORTED_LANGS:
+            raise ValueError("unsupported language")
+        return v
+
+    @field_validator("languages")
+    @classmethod
+    def langs(cls, v):
+        if any(x not in SUPPORTED_LANGS for x in v):
             raise ValueError("unsupported language")
         return v
 
@@ -78,7 +110,7 @@ def _consume(db: Session, raw: str, purpose: str, user_id: int | None = None) ->
     return t
 
 
-@router.post("/register", status_code=201)
+@router.post("/register", status_code=201, dependencies=[Depends(limit("register", 20, 3600))])
 def register(body: RegisterIn, db: Session = Depends(get_db)):
     if body.role == Role.admin:
         raise HTTPException(403, "Admin accounts cannot be self-registered")
@@ -93,9 +125,7 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     db.add(u)
     db.flush()
     if body.role == Role.patient:
-        from datetime import date
-        dob = date.fromisoformat(body.date_of_birth) if body.date_of_birth else None
-        db.add(PatientProfile(user_id=u.id, date_of_birth=dob, sex=body.sex, country=body.country, region=body.region,
+        db.add(PatientProfile(user_id=u.id, date_of_birth=body.date_of_birth, sex=body.sex, country=body.country, region=body.region,
                               city=body.city, emergency_contact_name=body.emergency_contact_name,
                               emergency_contact_phone=body.emergency_contact_phone, medical_history=body.medical_history,
                               allergies=body.allergies, current_medications=body.current_medications))
@@ -105,25 +135,25 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
                                country=body.country, city=body.city))  # status defaults to PENDING
         db.flush()
         for c in body.credentials:
-            if not {"kind", "issuer", "number"} <= c.keys():
-                raise HTTPException(422, "credential needs kind, issuer, number")
-            db.add(Credential(provider_id=u.id, kind=c["kind"], issuer=c["issuer"], number=c["number"],
-                              document_key=c.get("document_key")))
+            if db.scalar(select(Credential.id).where(Credential.issuer == c.issuer, Credential.number == c.number)):
+                raise HTTPException(409, "This registration number is already on file")
+            db.add(Credential(provider_id=u.id, kind=c.kind, issuer=c.issuer, number=c.number))
     token = _issue(db, u, "verify_email", minutes=60 * 24)
     notify(db, u, "verify_email", "Verify your email", f"Verification token: {token}", external=True)
     if u.phone:
         notify(db, u, "verify_phone", "Verify your phone", f"Your code: {_issue(db, u, 'verify_phone', otp=True, minutes=10)}", external=False)
     audit(db, u.id, "auth.register", "user", u.id, role=body.role.value)
     db.commit()
+    out_extra = {"dev_verify_token": token} if get_settings().env != "production" else {}
     msg = "Registered. Verify your email." + (" Your professional account is pending admin verification." if body.role != Role.patient else "")
-    return {"id": u.id, "message": msg}
+    return {"id": u.id, "message": msg, **out_extra}
 
 
 class VerifyIn(BaseModel):
     token: str
 
 
-@router.post("/verify-email")
+@router.post("/verify-email", dependencies=[Depends(limit("verify", 20, 3600))])
 def verify_email(body: VerifyIn, db: Session = Depends(get_db)):
     t = _consume(db, body.token, "verify_email")
     db.get(User, t.user_id).email_verified = True
@@ -131,7 +161,7 @@ def verify_email(body: VerifyIn, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.post("/verify-phone")
+@router.post("/verify-phone", dependencies=[Depends(limit("verifyphone", 10, 600))])
 def verify_phone(body: VerifyIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     _consume(db, body.token, "verify_phone", user.id)
     user.phone_verified = True
@@ -144,12 +174,14 @@ class LoginIn(BaseModel):
     password: str
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(limit("login", 20, 60))])
 def login(body: LoginIn, db: Session = Depends(get_db)):
     s = get_settings()
     u = db.scalar(select(User).where(User.email == body.email.lower()))
     if u and u.locked_until and u.locked_until > utcnow():
         raise HTTPException(429, "Account temporarily locked. Try again later.")
+    if not u:
+        verify_password(body.password, _DUMMY_HASH)  # same cost as a real check: no user-enumeration by timing
     if not u or not verify_password(body.password, u.password_hash):
         if u:
             u.failed_logins += 1
@@ -163,8 +195,8 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     u.failed_logins = 0
     audit(db, u.id, "auth.login", "user", u.id)
     db.commit()
-    return {"access_token": create_token(u.id, "access", minutes=s.access_token_minutes),
-            "refresh_token": create_token(u.id, "refresh", days=s.refresh_token_days), "role": u.role.value}
+    return {"access_token": create_token(u.id, "access", minutes=s.access_token_minutes, version=u.token_version),
+            "refresh_token": create_token(u.id, "refresh", days=s.refresh_token_days, version=u.token_version), "role": u.role.value}
 
 
 class RefreshIn(BaseModel):
@@ -174,20 +206,29 @@ class RefreshIn(BaseModel):
 @router.post("/refresh")
 def refresh(body: RefreshIn, db: Session = Depends(get_db)):
     try:
-        uid = decode_token(body.refresh_token, "refresh")
+        uid, tv = decode_token(body.refresh_token, "refresh")
     except jwt.PyJWTError:
         raise HTTPException(401, "Invalid refresh token")
     u = db.get(User, uid)
-    if not u or not u.is_active:
-        raise HTTPException(401, "Account disabled")
-    return {"access_token": create_token(u.id, "access", minutes=get_settings().access_token_minutes)}
+    if not u or not u.is_active or u.token_version != tv:
+        raise HTTPException(401, "Session expired")
+    return {"access_token": create_token(u.id, "access", minutes=get_settings().access_token_minutes, version=u.token_version)}
+
+
+@router.post("/logout")
+def logout(u: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Revokes ALL of this user's access and refresh tokens."""
+    u.token_version += 1
+    audit(db, u.id, "auth.logout", "user", u.id)
+    db.commit()
+    return {"ok": True}
 
 
 class ForgotIn(BaseModel):
     email: EmailStr
 
 
-@router.post("/forgot-password")
+@router.post("/forgot-password", dependencies=[Depends(limit("forgot", 5, 3600))])
 def forgot(body: ForgotIn, db: Session = Depends(get_db)):
     u = db.scalar(select(User).where(User.email == body.email.lower()))
     if u:
@@ -207,11 +248,12 @@ class ResetIn(BaseModel):
         return v
 
 
-@router.post("/reset-password")
+@router.post("/reset-password", dependencies=[Depends(limit("reset", 10, 3600))])
 def reset(body: ResetIn, db: Session = Depends(get_db)):
     t = _consume(db, body.token, "reset_password")
     u = db.get(User, t.user_id)
     u.password_hash, u.failed_logins, u.locked_until = hash_password(body.new_password), 0, None
+    u.token_version += 1  # a password reset signs out every existing session
     audit(db, u.id, "auth.password_reset", "user", u.id)
     db.commit()
     return {"ok": True}
@@ -227,17 +269,17 @@ def me(u: User = Depends(current_user), db: Session = Depends(get_db)):
 
 
 class ProfileIn(BaseModel):
-    full_name: str | None = None
+    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)] | None = None
     preferred_language: str | None = None
-    preferred_channel: str | None = None
-    phone: str | None = None
-    region: str | None = None
-    city: str | None = None
-    emergency_contact_name: str | None = None
-    emergency_contact_phone: str | None = None
-    medical_history: str | None = None
-    allergies: list[str] | None = None
-    current_medications: list[str] | None = None
+    preferred_channel: Literal["email", "sms"] | None = None
+    phone: Annotated[str, StringConstraints(pattern=_PHONE)] | None = None
+    region: Short | None = None
+    city: Short | None = None
+    emergency_contact_name: Medium | None = None
+    emergency_contact_phone: Annotated[str, StringConstraints(pattern=_PHONE)] | None = None
+    medical_history: Long | None = None
+    allergies: ShortList | None = None
+    current_medications: ShortList | None = None
 
 
 @router.patch("/me")
@@ -245,6 +287,8 @@ def update_profile(body: ProfileIn, u: User = Depends(current_user), db: Session
     d = body.model_dump(exclude_unset=True)
     if "preferred_language" in d and d["preferred_language"] not in SUPPORTED_LANGS:
         raise HTTPException(422, "unsupported language")
+    if d.get("phone") and db.scalar(select(User.id).where(User.phone == d["phone"], User.id != u.id)):
+        raise HTTPException(409, "Phone number already registered")
     for k in ("full_name", "preferred_language", "preferred_channel", "phone"):
         if k in d:
             setattr(u, k, d.pop(k))

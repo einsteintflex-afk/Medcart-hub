@@ -4,12 +4,12 @@ const step = (n) => console.log('✔', n);
 (async () => {
   const b = await chromium.launch(); const errs = [];
   const mk = async (email) => { const c = await b.newContext({ viewport: { width: 1280, height: 900 } }); const p = await c.newPage();
-    p.on('pageerror', e => errs.push(email + ' PAGEERROR ' + e.message)); p.on('dialog', d => d.accept());
+    p.on('pageerror', e => errs.push(email + ' PAGEERROR ' + e.message)); p.on('dialog', d => d.accept().catch(() => {}));
     p.on('response', r => { if (r.url().includes('/api/v1') && r.status() >= 400) errs.push(`${email} HTTP ${r.status()} ${r.request().method()} ${r.url().replace(/.*v1/, '')}`); });
     await p.goto(U + '/login'); await p.fill('#em', email); await p.fill('#pw', PW); await p.click('button[type=submit]'); await p.waitForSelector('nav a'); return p; };
   const pat = await mk('patient@example.com');
   // 1. subscribe (simulated checkout)
-  await pat.click('text=Subscribe — GH₵60/month'); await pat.waitForSelector('.badge:has-text("Active")'); step('patient subscription active after server-verified payment');
+  await pat.click('text=Subscribe — GH₵60/month'); await pat.waitForSelector('.badge:text-is("Active")'); step('patient subscription active after server-verified payment');
   // 2. request doctor
   await pat.goto(U + '/app/consult?role=doctor'); await pat.waitForSelector('article:has-text("Esi Owusu")');
   await pat.click('article:has-text("Esi Owusu") >> text=Request'); await pat.fill('#cc', 'Persistent cough for two weeks');

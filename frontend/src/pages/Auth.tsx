@@ -18,7 +18,7 @@ export default function Auth({ onLogin }: { onLogin: (m: Me) => void }) {
         const body: any = { email: f.email, password: f.password, full_name: f.full_name, phone: f.phone || null, role: f.role, preferred_language: i18n.language };
         if (isPro) { body.specialty = f.specialty; body.credentials = [{ kind: "licence", issuer: f.licence_issuer, number: f.licence_number }]; }
         const r = await api("/auth/register", { body });
-        setInfo(r.message); setMode("login"); return;
+        setInfo(r.message + (r.dev_verify_token ? ` (dev code: ${r.dev_verify_token})` : " We sent you a verification link.")); setMode("login"); return;
       }
       const r = await api("/auth/login", { body: { email: f.email, password: f.password } });
       setToken(r.access_token);
@@ -44,7 +44,7 @@ export default function Auth({ onLogin }: { onLogin: (m: Me) => void }) {
       </>}
       <label htmlFor="em">{t("email")}</label><input id="em" type="email" required value={f.email} onChange={set("email")} autoComplete="username" />
       <label htmlFor="pw">{t("password")}</label><input id="pw" type="password" required minLength={10} value={f.password} onChange={set("password")} autoComplete={mode === "login" ? "current-password" : "new-password"} />
-      {err && <p className="error" role="alert">{err}</p>}{info && <p role="status">{info}</p>}
+      {err && <p className="error" role="alert">{err}</p>}{info && <p role="status">{info} <a href="/verify">Enter code</a></p>}
       <button className="primary" type="submit">{mode === "login" ? t("login") : t("register")}</button>{" "}
       <button type="button" onClick={() => setMode(mode === "login" ? "register" : "login")}>{mode === "login" ? t("register") : t("login")}</button>
     </form>

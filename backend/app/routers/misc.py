@@ -1,16 +1,18 @@
 import math
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Literal
+
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
 from ..deps import current_user
+from ..ratelimit import limit
 from ..models import Facility, Language, Notification, PatientProfile, User
-from ..services import ai_assistant, ai_safety
-from ..services.notifications import notify
+from ..services import ai_assistant
 
 router = APIRouter(tags=["misc"])
 
@@ -30,9 +32,8 @@ def _fac(f: Facility, d: float | None = None) -> dict:
     return out
 
 
-@router.get("/facilities")
-def facilities(kind: str | None = None, city: str | None = None, lat: float | None = None, lon: float | None = None,
-               radius_km: float = 25, emergency_only: bool = False, db: Session = Depends(get_db)):
+def find_facilities(db: Session, kind=None, city=None, lat=None, lon=None, radius_km: float = 25, emergency_only: bool = False) -> list[dict]:
+    """Plain function (no FastAPI parameter objects) so other endpoints can reuse it safely."""
     q = select(Facility).where(Facility.verified)
     if kind:
         q = q.where(Facility.kind == kind)
@@ -47,18 +48,30 @@ def facilities(kind: str | None = None, city: str | None = None, lat: float | No
     return [_fac(f) for f in rows]
 
 
+@router.get("/facilities")
+def facilities(kind: Literal["hospital", "clinic", "pharmacy", "laboratory", "diagnostic", "specialist"] | None = None,
+               city: str | None = Query(None, max_length=100), lat: float | None = Query(None, ge=-90, le=90),
+               lon: float | None = Query(None, ge=-180, le=180), radius_km: float = Query(25, gt=0, le=500),
+               emergency_only: bool = False, db: Session = Depends(get_db)):
+    return find_facilities(db, kind, city, lat, lon, radius_km, emergency_only)
+
+
 @router.get("/languages")
 def languages(db: Session = Depends(get_db)):
-    return [{"code": x.code, "name": x.name, "stt": x.stt_supported, "tts": x.tts_supported,
+    """Effective capability = admin flag AND what the configured provider can really do."""
+    from ..services import language as lang
+    caps = lang.capabilities()
+    return [{"code": x.code, "name": x.name, "stt": x.stt_supported and caps.get(x.code, {}).get("stt", False),
+             "tts": x.tts_supported and caps.get(x.code, {}).get("tts", False), "translate": caps.get(x.code, {}).get("translate", False),
              "human_interpreter": x.human_interpreter_available} for x in db.scalars(select(Language).where(Language.enabled))]
 
 
 # ---- emergency
 @router.get("/emergency/info")
-def emergency_info(country: str = "GH", lat: float | None = None, lon: float | None = None, db: Session = Depends(get_db)):
+def emergency_info(country: str = Query("GH", pattern=r"^[A-Z]{2}$"), lat: float | None = Query(None, ge=-90, le=90),
+                   lon: float | None = Query(None, ge=-180, le=180), db: Session = Depends(get_db)):
     s = get_settings()
-    near = facilities(emergency_only=True, lat=lat, lon=lon, db=db, radius_km=50) if lat is not None and lon is not None \
-        else facilities(emergency_only=True, db=db)
+    near = find_facilities(db, lat=lat, lon=lon, radius_km=50, emergency_only=True)
     return {"emergency_number": s.emergency_numbers.get(country, "112"), "nearby_emergency_facilities": near[:5],
             "warning_signs": ["Chest pain or pressure", "Difficulty breathing", "Sudden weakness, face droop or slurred speech",
                               "Severe bleeding", "Seizure or loss of consciousness", "Thoughts of harming yourself",
@@ -101,25 +114,28 @@ def mark_read(nid: int, u: User = Depends(current_user), db: Session = Depends(g
 
 
 # ---- AI assistant
+class ChatMsg(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
 class AIIn(BaseModel):
-    messages: list[dict]  # [{role, content}]
-    language: str | None = None
+    messages: list[ChatMsg] = Field(min_length=1, max_length=40)
+    language: Literal["en", "tw", "ha", "fat", "fr", "es"] | None = None
 
 
-@router.post("/ai/chat")
+@router.post("/ai/chat", dependencies=[Depends(limit("ai", 30, 60))])
 def ai_chat(body: AIIn, u: User = Depends(current_user), db: Session = Depends(get_db)):
-    if not body.messages or body.messages[-1].get("role") != "user":
+    if body.messages[-1].role != "user":
         raise HTTPException(422, "last message must be from the user")
-    hist = [{"role": m["role"], "content": str(m["content"])[:4000]} for m in body.messages[-12:] if m.get("role") in ("user", "assistant")]
+    hist = [{"role": m.role, "content": m.content} for m in body.messages[-12:]]
     pp = db.get(PatientProfile, u.id)
-    return ai_assistant.respond(hist, body.language or u.preferred_language, pp.country if pp else "GH")
-
-
-@router.post("/ai/transcribe")
-def transcribe():
-    raise HTTPException(503, "Speech-to-text provider not configured. Local-language (Twi/Fante/Hausa) STT must be vendor-validated before launch.")
-
-
-@router.post("/ai/speak")
-def speak():
-    raise HTTPException(503, "Text-to-speech provider not configured. Local-language TTS must be vendor-validated before launch.")
+    lang = body.language or u.preferred_language
+    extra = None
+    if lang in ("tw", "ha", "fat"):  # no local-language lexicon yet: also screen an English translation of the user's words
+        from ..services import language as langsvc
+        try:
+            extra = " ".join(langsvc.get_provider().translate(m["content"], lang, "en").text for m in hist[-4:] if m["role"] == "user")
+        except Exception:  # noqa: BLE001 - provider missing: fall back to the always-on emergency footer
+            extra = None
+    return ai_assistant.respond(hist, lang, pp.country if pp else "GH", extra_screen_text=extra)

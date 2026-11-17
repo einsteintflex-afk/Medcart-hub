@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from app.db import SessionLocal, utcnow
-from .conftest import PW, _login, pay, register_patient, register_pro, settle_and_verify
+from .conftest import pay, register_patient, register_pro, settle_and_verify
 
 A = "/api/v1"
 
@@ -60,7 +60,7 @@ def test_facility_admin_flow(client, admin):
     # another facility admin cannot edit it
     _, fh2 = register_pro(client, admin, role="facility_admin", email="fac2@x.com")
     assert client.patch(f"{A}/facilities/mine/{fid}", headers=fh2, json={"name": "hacked"}).status_code == 404
-    assert client.patch(f"{A}/facilities/mine/{fid}", headers=fh, json={"phone": "030"}).status_code == 200
+    assert client.patch(f"{A}/facilities/mine/{fid}", headers=fh, json={"phone": "030 123 4567"}).status_code == 200
 
 
 def test_complaints_and_subscription_grant(client, admin):

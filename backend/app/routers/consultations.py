@@ -2,18 +2,21 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db, utcnow
-from ..deps import current_user, verified_professional
+from ..deps import current_user, verified_email, verified_professional
 from ..models import (AccessGrant, ConsultMessage, Consultation, ConsultStatus, Prescription, ProviderProfile, Rating,
                       Referral, Role, User)
 from ..services.audit import audit
 from ..services.notifications import notify
 from ..services.payments import has_active_subscription
+from .files import require_owned
 
 router = APIRouter(prefix="/consultations", tags=["consultations"])
 
@@ -30,11 +33,11 @@ class ConsultIn(BaseModel):
 
 
 def _can_view(c: Consultation, u: User) -> bool:
-    return u.id in (c.patient_id, c.provider_id) or u.role == Role.admin
+    return u.id in (c.patient_id, c.provider_id)  # admins manage the platform; they do not read clinical content
 
 
 @router.post("", status_code=201)
-def request_consult(body: ConsultIn, u: User = Depends(current_user), db: Session = Depends(get_db)):
+def request_consult(body: ConsultIn, u: User = Depends(verified_email), db: Session = Depends(get_db)):
     s = get_settings()
     if u.role != Role.patient:
         raise HTTPException(403, "Patients only")
@@ -67,7 +70,9 @@ def request_consult(body: ConsultIn, u: User = Depends(current_user), db: Sessio
 @router.get("")
 def my_consults(u: User = Depends(current_user), db: Session = Depends(get_db)):
     col = Consultation.patient_id if u.role == Role.patient else Consultation.provider_id
-    rows = db.scalars(select(Consultation).where(col == u.id).order_by(Consultation.id.desc())).all()
+    q = select(Consultation).where(col == u.id)
+    # clinicians see urgent requests first; patients see newest first
+    rows = db.scalars(q.order_by(Consultation.urgent.desc(), Consultation.id.desc()) if u.role != Role.patient else q.order_by(Consultation.id.desc())).all()
     return [{"id": c.id, "status": c.status.value, "channel": c.channel, "urgent": c.urgent, "provider_id": c.provider_id,
              "patient_id": c.patient_id, "scheduled_for": c.scheduled_for, "fee_pesewas": c.fee_pesewas} for c in rows]
 
@@ -107,6 +112,7 @@ def send_message(cid: int, body: MessageIn, u: User = Depends(current_user), db:
         raise HTTPException(404)
     if c.status not in (ConsultStatus.accepted, ConsultStatus.in_progress):
         raise HTTPException(409, "Consultation is not open for messaging")
+    require_owned(db, body.attachment_key, u, {"consult", "voice", "symptom_photo"}, consultation_id=cid)
     c.status = ConsultStatus.in_progress
     m = ConsultMessage(consultation_id=cid, sender_id=u.id, body=body.body, language=body.language,
                        machine_translated=body.machine_translated, attachment_key=body.attachment_key)
@@ -125,7 +131,7 @@ def messages(cid: int, u: User = Depends(current_user), db: Session = Depends(ge
     db.commit()
     rows = db.scalars(select(ConsultMessage).where(ConsultMessage.consultation_id == cid).order_by(ConsultMessage.id)).all()
     return [{"id": m.id, "sender_id": m.sender_id, "body": m.body, "language": m.language,
-             "machine_translated": m.machine_translated,
+             "machine_translated": m.machine_translated, "attachment_key": m.attachment_key,
              "translation_notice": "Automatically translated; confirm critical information with your clinician."
              if m.machine_translated else None, "created_at": m.created_at} for m in rows]
 
@@ -154,8 +160,19 @@ def complete(cid: int, body: CompleteIn, u: User = Depends(verified_professional
     return {"status": c.status.value}
 
 
+_T = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+
+
+class RxItem(BaseModel):
+    drug: _T
+    dose: _T
+    frequency: _T
+    duration: _T
+    instructions: Annotated[str, StringConstraints(max_length=500)] | None = None
+
+
 class RxIn(BaseModel):
-    items: list[dict]
+    items: list[RxItem] = Field(min_length=1, max_length=20)
 
 
 @router.post("/{cid}/prescriptions", status_code=201)
@@ -166,9 +183,7 @@ def prescribe(cid: int, body: RxIn, u: User = Depends(verified_professional(Role
         raise HTTPException(404)
     if not pp.can_prescribe:
         raise HTTPException(403, "You are not authorised to prescribe on this platform")
-    if not body.items or any(not {"drug", "dose", "frequency", "duration"} <= i.keys() for i in body.items):
-        raise HTTPException(422, "Each item needs drug, dose, frequency, duration")
-    rx = Prescription(consultation_id=cid, patient_id=c.patient_id, prescriber_id=u.id, items=body.items)
+    rx = Prescription(consultation_id=cid, patient_id=c.patient_id, prescriber_id=u.id, items=[i.model_dump() for i in body.items])
     db.add(rx)
     notify(db, c.patient_id, "prescription", "New prescription", f"Consultation #{cid}")
     audit(db, u.id, "prescription.create", "prescription", cid, patient_id=c.patient_id)

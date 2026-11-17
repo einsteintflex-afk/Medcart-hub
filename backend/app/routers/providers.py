@@ -1,13 +1,15 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db, utcnow
-from ..deps import current_user, verified_professional
+from ..deps import current_user, verified_email, verified_professional
 from ..models import (Appointment, Availability, Contribution, ContribStatus, Credential, PROFESSIONAL_ROLES, ProviderProfile,
                       Role, User, VerificationStatus)
 from ..services.audit import audit
@@ -30,9 +32,10 @@ def _card(db: Session, u: User, p: ProviderProfile) -> dict:
 
 
 @router.get("/providers")
-def search(role: str | None = None, specialty: str | None = None, language: str | None = None, city: str | None = None,
-           min_experience: int = 0, max_fee_pesewas: int | None = None, min_rating: float = 0,
-           sort: str = "experience", u: User = Depends(current_user), db: Session = Depends(get_db)):
+def search(role: Literal["doctor", "pharmacist", "nurse"] | None = None, specialty: Annotated[str, Query(max_length=100)] | None = None,
+           language: Annotated[str, Query(max_length=8)] | None = None, city: Annotated[str, Query(max_length=100)] | None = None,
+           min_experience: int = Query(0, ge=0, le=80), max_fee_pesewas: int | None = Query(None, ge=0, le=10_000_000), min_rating: float = Query(0, ge=0, le=5),
+           sort: Literal["experience", "rating"] = "experience", u: User = Depends(current_user), db: Session = Depends(get_db)):
     """Only admin-verified providers are listed. Contributions are shown, never used to override verification."""
     q = (select(User, ProviderProfile).join(ProviderProfile, ProviderProfile.user_id == User.id)
          .where(ProviderProfile.status == VerificationStatus.approved, User.is_active,
@@ -99,19 +102,74 @@ def my_verification(u: User = Depends(current_user), db: Session = Depends(get_d
             "credentials": [{"kind": c.kind, "issuer": c.issuer, "number": c.number, "status": c.status.value} for c in creds]}
 
 
+class Slot(BaseModel):
+    weekday: int = Field(ge=0, le=6)
+    start_minute: int = Field(ge=0, le=1439)
+    end_minute: int = Field(ge=1, le=1440)
+
+    @model_validator(mode="after")
+    def ordered(self):
+        if self.start_minute >= self.end_minute:
+            raise ValueError("start must be before end")
+        return self
+
+
 class AvailIn(BaseModel):
-    slots: list[dict]  # [{weekday,start_minute,end_minute}]
+    slots: list[Slot] = Field(max_length=70)
 
 
 @router.put("/providers/me/availability")
 def set_availability(body: AvailIn, u: User = Depends(verified_professional()), db: Session = Depends(get_db)):
-    for s in body.slots:
-        if not (0 <= s["weekday"] <= 6 and 0 <= s["start_minute"] < s["end_minute"] <= 1440):
-            raise HTTPException(422, "invalid slot")
     for old in db.scalars(select(Availability).where(Availability.provider_id == u.id)):
         db.delete(old)
     for s in body.slots:
-        db.add(Availability(provider_id=u.id, **{k: s[k] for k in ("weekday", "start_minute", "end_minute")}))
+        db.add(Availability(provider_id=u.id, weekday=s.weekday, start_minute=s.start_minute, end_minute=s.end_minute))
+    db.commit()
+    return {"ok": True}
+
+
+# ---- credentials (professionals upload licence/ID scans; only admins can read them)
+@router.get("/providers/me/credentials")
+def my_credentials(u: User = Depends(current_user), db: Session = Depends(get_db)):
+    if u.role not in PROFESSIONAL_ROLES:
+        raise HTTPException(403)
+    return [{"id": c.id, "kind": c.kind, "issuer": c.issuer, "number": c.number, "status": c.status.value, "has_document": bool(c.document_key)}
+            for c in db.scalars(select(Credential).where(Credential.provider_id == u.id))]
+
+
+class CredIn(BaseModel):
+    kind: str
+    issuer: str
+    number: str
+    document_key: str | None = None
+
+
+@router.post("/providers/me/credentials", status_code=201)
+def add_credential(body: CredIn, u: User = Depends(current_user), db: Session = Depends(get_db)):
+    from .files import require_owned
+    if u.role not in PROFESSIONAL_ROLES:
+        raise HTTPException(403)
+    if db.scalar(select(Credential.id).where(Credential.issuer == body.issuer, Credential.number == body.number)):
+        raise HTTPException(409, "This registration number is already on file")
+    require_owned(db, body.document_key, u, {"credential"})
+    c = Credential(provider_id=u.id, kind=body.kind, issuer=body.issuer, number=body.number, document_key=body.document_key)
+    db.add(c)
+    p = db.get(ProviderProfile, u.id)
+    if p.status == VerificationStatus.rejected:
+        p.status = VerificationStatus.pending  # resubmission re-opens review
+    audit(db, u.id, "credential.add", "credential", None)
+    db.commit()
+    return {"id": c.id}
+
+
+@router.post("/providers/me/credentials/{cid}/document")
+def attach_credential_document(cid: int, key: str, u: User = Depends(current_user), db: Session = Depends(get_db)):
+    from .files import require_owned
+    c = db.get(Credential, cid)
+    if not c or c.provider_id != u.id:
+        raise HTTPException(404)
+    require_owned(db, key, u, {"credential"})
+    c.document_key = key
     db.commit()
     return {"ok": True}
 
@@ -132,7 +190,7 @@ def _within_availability(db, provider_id, start, minutes) -> bool:
 
 
 @router.post("/appointments", status_code=201)
-def book(body: ApptIn, u: User = Depends(current_user), db: Session = Depends(get_db)):
+def book(body: ApptIn, u: User = Depends(verified_email), db: Session = Depends(get_db)):
     if u.role != Role.patient:
         raise HTTPException(403)
     if not (body.provider_id or body.facility_id):

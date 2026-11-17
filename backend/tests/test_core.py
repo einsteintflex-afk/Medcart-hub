@@ -1,9 +1,7 @@
 import json
-import time
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import Facility
 from app.services.paystack import _sim, sign
 from .conftest import PW, pay, register_patient, register_pro, settle_and_verify
 

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { api } from "../../api";
 import type { Me } from "../../App";
 import { Badge, Err, Section, Table, d, dt, useAction, useFetch } from "../../ui";
+import { FileLink, FileUpload } from "../../files";
 
 function Chart({ pts }: { pts: { v: number; v2?: number | null; ab: boolean }[] }) {
   if (pts.length < 2) return <p className="muted">Add at least two readings to see a chart.</p>;
@@ -41,16 +42,17 @@ const CATS = ["history", "diagnosis", "medication", "allergy", "consultation", "
 export function Records({ me }: { me: Me }) {
   const [cat, setCat] = useState(""); const { data: recs, reload } = useFetch<any[]>(`/patients/${me.id}/records${cat ? `?category=${cat}` : ""}`, [cat]);
   const { data: grants, reload: rg } = useFetch<any[]>("/access-grants"); const { data: log } = useFetch<any[]>("/access-log"); const { data: provs } = useFetch<any[]>("/providers");
-  const [f, setF] = useState({ category: "diagnosis", title: "", body: "" }); const [g, setG] = useState({ provider_id: "", days: "30" }); const act = useAction(() => { reload(); rg(); });
+  const [f, setF] = useState({ category: "diagnosis", title: "", body: "" }); const [doc, setDoc] = useState<{ key: string; name: string } | null>(null); const [g, setG] = useState({ provider_id: "", days: "30" }); const act = useAction(() => { reload(); rg(); });
   return (<>
     <h1>My health record</h1>
     <Section title="Add an entry"><div className="card"><div className="grid"><div><label htmlFor="c">Category</label><select id="c" value={f.category} onChange={e => setF({ ...f, category: e.target.value })}>{CATS.map(c => <option key={c}>{c}</option>)}</select></div>
       <div><label htmlFor="t">Title</label><input id="t" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} /></div></div>
       <label htmlFor="b">Details</label><textarea id="b" rows={3} value={f.body} onChange={e => setF({ ...f, body: e.target.value })} />
-      <button className="primary" disabled={!f.title} onClick={() => act.run(async () => { await api("/records", { body: f }); setF({ ...f, title: "", body: "" }); })}>Save</button>
-      <p className="muted">Document/photo upload needs file storage to be connected (not yet enabled).</p><Err msg={act.err} /></div></Section>
+      <FileUpload purpose="record" label="Attach document or photo" onUploaded={setDoc} /> {doc && <Badge>{doc.name}</Badge>}<br /><br />
+      <button className="primary" disabled={!f.title} onClick={() => act.run(async () => { await api("/records", { body: { ...f, document_key: doc?.key ?? null } }); setF({ ...f, title: "", body: "" }); setDoc(null); })}>Save</button>
+      <p className="muted">PDF, PNG or JPEG up to 10 MB. Files are encrypted at rest and only shared with professionals you approve.</p><Err msg={act.err} /></div></Section>
     <Section title="Records" action={<select aria-label="Filter" style={{ width: "auto" }} value={cat} onChange={e => setCat(e.target.value)}><option value="">All</option>{CATS.map(c => <option key={c}>{c}</option>)}</select>}>
-      <Table rows={recs} cols={[{ head: "Date", cell: r => d(r.recorded_on) }, { head: "Type", cell: r => <Badge>{r.category}</Badge> }, { head: "Title", cell: r => <><b>{r.title}</b><div className="muted">{r.body}</div></> }]} /></Section>
+      <Table rows={recs} cols={[{ head: "Date", cell: r => d(r.recorded_on) }, { head: "Type", cell: r => <Badge>{r.category}</Badge> }, { head: "Title", cell: r => <><b>{r.title}</b><div className="muted">{r.body}</div>{r.document_key && <FileLink fileKey={r.document_key} label="Open document" />}</> }]} /></Section>
     <Section title="Who can see my records"><div className="card">
       <div className="row"><select aria-label="Professional" style={{ flex: 1, margin: 0 }} value={g.provider_id} onChange={e => setG({ ...g, provider_id: e.target.value })}><option value="">Choose a professional…</option>{provs?.map(p => <option key={p.id} value={p.id}>{p.name} ({p.role})</option>)}</select>
         <select aria-label="Duration" style={{ width: "auto", margin: 0 }} value={g.days} onChange={e => setG({ ...g, days: e.target.value })}><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option></select>
@@ -90,7 +92,7 @@ export function Labs() {
     <Section title="Request tests"><div className="card"><label htmlFor="lt">Tests (comma separated)</label><input id="lt" value={tests} onChange={e => setTests(e.target.value)} placeholder="Full blood count, Malaria RDT" />
       <label htmlFor="lf">Laboratory / diagnostic centre</label><select id="lf" value={fac} onChange={e => setFac(e.target.value)}><option value="">Any</option>{facs?.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
       <button className="primary" disabled={!tests} onClick={() => act.run(async () => { await api("/lab-requests", { body: { tests: tests.split(",").map(s => s.trim()).filter(Boolean), facility_id: fac ? +fac : null } }); setTests(""); })}>Request</button><Err msg={act.err} /></div></Section>
-    <Section title="My requests & results"><Table rows={labs} cols={[{ head: "Tests", cell: r => r.tests.join(", ") }, { head: "Status", cell: r => <Badge>{r.status}</Badge> }, { head: "Result", cell: r => r.result_text ?? "—" }]} />
+    <Section title="My requests & results"><Table rows={labs} cols={[{ head: "Tests", cell: r => r.tests.join(", ") }, { head: "Status", cell: r => <Badge>{r.status}</Badge> }, { head: "Result", cell: r => <>{r.result_text ?? "—"}{r.result_document_key && <FileLink fileKey={r.result_document_key} label="Open result file" />}</> }]} />
       <p className="muted">Results are saved to your health record. Ask your clinician or the AI assistant to explain them.</p></Section>
   </>);
 }

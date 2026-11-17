@@ -2,16 +2,18 @@ import os
 import tempfile
 
 _dir = tempfile.mkdtemp()
-os.environ["MEDCART_DATABASE_URL"] = f"sqlite:///{_dir}/t.db"
+os.environ.setdefault("MEDCART_DATABASE_URL", f"sqlite:///{_dir}/t.db")  # override to run on PostgreSQL
 os.environ["MEDCART_PAYSTACK_SECRET_KEY"] = "sk_test_dummy"
 os.environ["MEDCART_MIN_CONTRIBUTION_CHARS"] = "50"
+os.environ["MEDCART_RATE_LIMIT_ENABLED"] = "false"
+os.environ["MEDCART_UPLOAD_DIR"] = os.path.join(_dir, "uploads")
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.db import Base, SessionLocal, engine
 from app.main import app
-from app.models import Facility, Role, User
+from app.models import Role, User
 from app.security import hash_password
 from app.services.paystack import _sim
 
@@ -23,6 +25,8 @@ def client():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     _sim.charges.clear()
+    from app import ratelimit
+    ratelimit.reset()
     with TestClient(app) as c:
         yield c
 
@@ -45,6 +49,7 @@ def register_patient(c, email="p@x.com"):
     r = c.post("/api/v1/auth/register", json={"email": email, "password": PW, "role": "patient", "full_name": "Pat",
                                               "phone": "+23320" + str(abs(hash(email)) % 10**7).zfill(7), "emergency_contact_phone": "+233200000002"})
     assert r.status_code == 201, r.text
+    assert c.post("/api/v1/auth/verify-email", json={"token": r.json()["dev_verify_token"]}).status_code == 200
     return _login(c, email)
 
 
@@ -54,6 +59,7 @@ def register_pro(c, admin_h, role="doctor", email="d@x.com", approve=True, can_p
                                               "credentials": [{"kind": "licence", "issuer": "MDC", "number": f"MDC-{email}"}]})
     assert r.status_code == 201, r.text
     uid = r.json()["id"]
+    assert c.post("/api/v1/auth/verify-email", json={"token": r.json()["dev_verify_token"]}).status_code == 200
     h = _login(c, email)
     if approve:
         rr = c.post(f"/api/v1/admin/providers/{uid}/review", headers=admin_h, json={"approve": True, "can_prescribe": can_prescribe})

@@ -14,11 +14,11 @@ def current_user(cred: HTTPAuthorizationCredentials | None = Depends(bearer), db
     if not cred:
         raise HTTPException(401, "Not authenticated")
     try:
-        uid = decode_token(cred.credentials, "access")
+        uid, tv = decode_token(cred.credentials, "access")
     except jwt.PyJWTError:
         raise HTTPException(401, "Invalid or expired token")
     u = db.get(User, uid)
-    if not u or not u.is_active:
+    if not u or not u.is_active or u.token_version != tv:
         raise HTTPException(401, "Account disabled")
     return u
 
@@ -53,3 +53,10 @@ def verified_professional(*roles: Role):
 
 def client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
+
+
+def verified_email(u: User = Depends(current_user)) -> User:
+    from .config import get_settings
+    if get_settings().require_verified_email and not u.email_verified:
+        raise HTTPException(403, "Please verify your email address first")
+    return u

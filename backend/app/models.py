@@ -6,6 +6,7 @@ from sqlalchemy import (JSON, Boolean, Date, DateTime, Enum, Float, ForeignKey, 
                         Text, UniqueConstraint, Index)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .crypto import EncryptedText
 from .db import Base, utcnow
 
 
@@ -43,6 +44,7 @@ class User(Base):
     phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
+    token_version: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -72,7 +74,7 @@ class PatientProfile(Base):
     city: Mapped[str | None] = mapped_column(String(100))
     emergency_contact_name: Mapped[str | None] = mapped_column(String(200))
     emergency_contact_phone: Mapped[str | None] = mapped_column(String(32))
-    medical_history: Mapped[str | None] = mapped_column(Text)
+    medical_history: Mapped[str | None] = mapped_column(EncryptedText)
     allergies: Mapped[list] = mapped_column(JSON, default=list)
     current_medications: Mapped[list] = mapped_column(JSON, default=list)
     user: Mapped[User] = relationship(back_populates="patient")
@@ -162,15 +164,15 @@ class Consultation(Base):
     channel: Mapped[str] = mapped_column(String(8))  # text|audio|video
     urgent: Mapped[bool] = mapped_column(Boolean, default=False)
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime)
-    concern: Mapped[str] = mapped_column(Text)
+    concern: Mapped[str] = mapped_column(EncryptedText)
     status: Mapped[ConsultStatus] = mapped_column(Enum(ConsultStatus), default=ConsultStatus.requested)
     fee_pesewas: Mapped[int] = mapped_column(Integer, default=0)
     share_records: Mapped[bool] = mapped_column(Boolean, default=False)
     language: Mapped[str] = mapped_column(String(8), default="en")
     interpretation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     room_id: Mapped[str | None] = mapped_column(String(64))
-    clinical_note: Mapped[str | None] = mapped_column(Text)
-    recommendation: Mapped[str | None] = mapped_column(Text)
+    clinical_note: Mapped[str | None] = mapped_column(EncryptedText)
+    recommendation: Mapped[str | None] = mapped_column(EncryptedText)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
@@ -180,7 +182,7 @@ class ConsultMessage(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     consultation_id: Mapped[int] = mapped_column(ForeignKey("consultations.id"), index=True)
     sender_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    body: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(EncryptedText)
     language: Mapped[str] = mapped_column(String(8), default="en")
     machine_translated: Mapped[bool] = mapped_column(Boolean, default=False)  # UI must label these
     attachment_key: Mapped[str | None] = mapped_column(String(500))
@@ -243,7 +245,7 @@ class HealthRecord(Base):
     patient_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     category: Mapped[str] = mapped_column(String(32), index=True)
     title: Mapped[str] = mapped_column(String(200))
-    body: Mapped[str | None] = mapped_column(Text)
+    body: Mapped[str | None] = mapped_column(EncryptedText)
     document_key: Mapped[str | None] = mapped_column(String(500))
     author_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     recorded_on: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -272,6 +274,7 @@ class Medication(Base):
     end_date: Mapped[datetime | None] = mapped_column(Date)
     remaining_doses: Mapped[int | None] = mapped_column(Integer)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class LabRequest(Base):
@@ -283,7 +286,7 @@ class LabRequest(Base):
     tests: Mapped[list] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="requested")  # requested|scheduled|resulted
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime)
-    result_text: Mapped[str | None] = mapped_column(Text)
+    result_text: Mapped[str | None] = mapped_column(EncryptedText)
     result_document_key: Mapped[str | None] = mapped_column(String(500))
     resulted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -362,6 +365,7 @@ class Payment(Base):
     provider_txn_id: Mapped[str | None] = mapped_column(String(80))
     failure_reason: Mapped[str | None] = mapped_column(String(200))
     fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    checkout_url: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -462,3 +466,31 @@ class Language(Base):
     tts_supported: Mapped[bool] = mapped_column(Boolean, default=False)
     translation_supported: Mapped[bool] = mapped_column(Boolean, default=True)
     human_interpreter_available: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class StoredFile(Base):
+    """Metadata for an uploaded file. Bytes live in object storage / disk, encrypted, under an unguessable key."""
+    __tablename__ = "stored_files"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    patient_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)  # whose health data this is
+    purpose: Mapped[str] = mapped_column(String(16))  # record|consult|lab|credential|symptom_photo|voice
+    consultation_id: Mapped[int | None] = mapped_column(ForeignKey("consultations.id"))
+    original_name: Mapped[str] = mapped_column(String(200))
+    content_type: Mapped[str] = mapped_column(String(60))
+    size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class InterpreterRequest(Base):
+    """Patient/clinician asks for a human interpreter for a consultation."""
+    __tablename__ = "interpreter_requests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    consultation_id: Mapped[int] = mapped_column(ForeignKey("consultations.id"), index=True)
+    requested_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    language: Mapped[str] = mapped_column(String(8))
+    reason: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open|assigned|closed
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

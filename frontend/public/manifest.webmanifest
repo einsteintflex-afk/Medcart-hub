@@ -1,0 +1,2 @@
+{ "name": "MedCart", "short_name": "MedCart", "start_url": "/", "display": "standalone", "background_color": "#f2f4f7", "theme_color": "#0b2545",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }] }

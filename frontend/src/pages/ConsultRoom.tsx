@@ -3,6 +3,8 @@ import { useParams } from "react-router-dom";
 import { api, ghs } from "../api";
 import type { Me } from "../App";
 import { Badge, Err, Section, dt, useAction, useFetch } from "../ui";
+import Call from "./Call";
+import { FileLink, FileUpload } from "../files";
 
 /** Shared consultation workspace: chat, patient rating, clinician notes / prescriptions / referral. */
 export default function ConsultRoom({ me }: { me: Me }) {
@@ -15,21 +17,26 @@ export default function ConsultRoom({ me }: { me: Me }) {
   useEffect(() => { loadMsgs(); const t = setInterval(loadMsgs, 5000); return () => clearInterval(t); }, [id]);
   useEffect(() => { end.current?.scrollIntoView(); }, [msgs.length]);
 
-  const send = () => text.trim() && act.run(async () => { await api(`/consultations/${id}/messages`, { body: { body: text, language: me.preferred_language } }); setText(""); await loadMsgs(); });
+  const send = () => (text.trim() || att) && act.run(async () => { await api(`/consultations/${id}/messages`, { body: { body: text || "(attachment)", language: me.preferred_language, attachment_key: att?.key ?? null } }); setText(""); setAtt(null); await loadMsgs(); });
   const [note, setNote] = useState(""); const [rec, setRec] = useState(""); const [fu, setFu] = useState("");
   const [rx, setRx] = useState({ drug: "", dose: "", frequency: "", duration: "", instructions: "" }); const [ref, setRef] = useState("");
-  const [stars, setStars] = useState(5);
+  const [stars, setStars] = useState(5); const [att, setAtt] = useState<{ key: string; name: string } | null>(null); const [tr, setTr] = useState<Record<number, any>>({}); const [tlang, setTlang] = useState(me.preferred_language || "en"); const [iMsg, setIMsg] = useState("");
   if (!c) return <p>Loading…</p>;
   return (<>
     <h1>Consultation #{c.id} <Badge warn={c.status === "rejected" || c.status === "cancelled"}>{c.status}</Badge></h1>
     <p>With <b>{c.other_party}</b> · {c.channel} · {ghs(c.fee_pesewas)} {c.urgent && <Badge warn>urgent</Badge>}{c.interpretation_enabled && <Badge>translation on</Badge>}</p>
     <p className="muted">Reason: {c.concern}</p>
-    {c.room_id && c.channel !== "text" && <div className="card">📹 {c.channel} room <code>{c.room_id}</code> — live audio/video infrastructure is not connected yet; use the chat below.</div>}
+    {open && c.channel !== "text" && <Call cid={c.id} video={c.channel === "video"} />}
     <Section title="Messages"><div className="card" style={{ maxHeight: 360, overflow: "auto" }}>
       {msgs.map(m => <div key={m.id} className={`msg ${m.sender_id === me.id ? "user" : "bot"}`}>{m.body}
-        {m.machine_translated && <div><small>🌐 {m.translation_notice}</small></div>}<div><small className="muted">{dt(m.created_at)}</small></div></div>)}
+        {m.attachment_key && <div><FileLink fileKey={m.attachment_key} inline={false} label="Open attachment" /></div>}
+        {m.machine_translated && <div><small>🌐 {m.translation_notice}</small></div>}
+        {c.interpretation_enabled && m.sender_id !== me.id && m.language !== tlang && <div><button onClick={() => api(`/consultations/${id}/messages/${m.id}/translate?target=${tlang}`, { method: "POST" }).then(r => setTr({ ...tr, [m.id]: r })).catch(e => setTr({ ...tr, [m.id]: { text: "", notice: e.message } }))}>🌐 Translate to {tlang}</button>{tr[m.id] && <div className="card" role="note" style={{ marginTop: 6, background: tr[m.id].needs_human_review ? "#fff4ed" : undefined }}>{tr[m.id].text}<br /><small>{tr[m.id].notice}</small></div>}</div>}<div><small className="muted">{dt(m.created_at)}</small></div></div>)}
       <div ref={end} /></div>
-      {open && <div className="row"><input style={{ flex: 1, margin: 0 }} aria-label="Message" value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} /><button className="primary" onClick={send}>Send</button></div>}
+      {open && <div className="row"><input style={{ flex: 1, margin: 0 }} aria-label="Message" value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} />
+        <FileUpload purpose={isPatient ? "symptom_photo" : "consult"} extra={{ consultation_id: c.id }} label="Attach" audio onUploaded={setAtt} /> {att && <Badge>{att.name}</Badge>}<button className="primary" onClick={send}>Send</button></div>}
+      {c.interpretation_enabled && <p><label>Translate incoming messages to <select style={{ width: "auto" }} aria-label="Translate to" value={tlang} onChange={e => setTlang(e.target.value)}>{["en", "tw", "ha", "fat", "fr", "es"].map(l => <option key={l}>{l}</option>)}</select></label> <small className="muted">Automated translation is labelled and never replaces an interpreter for dosages or emergencies.</small></p>}
+      <p><button onClick={() => act.run(async () => { await api(`/consultations/${id}/interpreter`, { body: { language: tlang, reason: "Human interpreter requested" } }); setIMsg("Interpreter request sent. We will notify you."); })}>🧑‍🤝‍🧑 Request a human interpreter</button> {iMsg}</p>
       <Err msg={act.err} />
     </Section>
     {c.clinical_note && <Section title="Clinical summary"><div className="card"><b>Assessment</b><p>{c.clinical_note}</p><b>Recommendation</b><p>{c.recommendation}</p></div></Section>}

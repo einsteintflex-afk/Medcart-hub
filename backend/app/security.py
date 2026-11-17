@@ -43,14 +43,15 @@ def new_otp() -> str:
     return f"{secrets.randbelow(10**6):06d}"
 
 
-def create_token(user_id: int, kind: str, minutes: int | None = None, days: int | None = None) -> str:
+def create_token(user_id: int, kind: str, minutes: int | None = None, days: int | None = None, version: int = 0) -> str:
     s = get_settings()
     exp = utcnow() + (timedelta(minutes=minutes) if minutes else timedelta(days=days or 0))
-    return jwt.encode({"sub": str(user_id), "typ": kind, "exp": exp}, s.jwt_secret, algorithm="HS256")
+    return jwt.encode({"sub": str(user_id), "typ": kind, "exp": exp, "tv": version}, s.jwt_secret, algorithm="HS256")
 
 
-def decode_token(token: str, kind: str) -> int:
+def decode_token(token: str, kind: str) -> tuple[int, int]:
+    """Returns (user_id, token_version). Caller must compare the version with the user's current one."""
     payload = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])
     if payload.get("typ") != kind:
         raise jwt.InvalidTokenError("wrong token type")
-    return int(payload["sub"])
+    return int(payload["sub"]), int(payload.get("tv", 0))

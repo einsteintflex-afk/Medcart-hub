@@ -1,15 +1,15 @@
-from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db, utcnow
-from ..deps import client_ip, require_admin
-from ..models import (AuditLog, Complaint, Consultation, Contribution, ContribStatus, Credential, CreditEntry, Facility,
+from ..deps import require_admin
+from ..models import (AuditLog, Complaint, Consultation, Contribution, ContribStatus, Credential, Facility,
                       Language, Payment, PaymentStatus, ProviderProfile, Settlement, User, VerificationStatus)
 from ..services import credits
+from .portal import FacilityIn
 from ..services.audit import audit
 from ..services.notifications import notify
 
@@ -106,12 +106,14 @@ def admin_withdraw(cid: int, reason: str, admin: User = Depends(require_admin), 
 
 
 class AdjustIn(BaseModel):
-    units_tenths: int
-    reason: str
+    units_tenths: int = Field(ge=-100_000, le=100_000)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 @router.post("/credits/{provider_id}/adjust")
 def adjust(provider_id: int, body: AdjustIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if not db.get(ProviderProfile, provider_id):
+        raise HTTPException(404, "Provider not found")
     try:
         e = credits.adjust(db, provider_id, body.units_tenths, admin.id, body.reason)
     except ValueError as ex:
@@ -121,7 +123,7 @@ def adjust(provider_id: int, body: AdjustIn, admin: User = Depends(require_admin
 
 
 @router.get("/audit-logs")
-def audit_logs(action: str | None = None, limit: int = 200, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def audit_logs(action: str | None = None, limit: int = Query(200, ge=1, le=1000), admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     q = select(AuditLog).order_by(AuditLog.id.desc()).limit(min(limit, 1000))
     if action:
         q = q.where(AuditLog.action == action)
@@ -156,22 +158,6 @@ def mark_paid(sid: int, admin: User = Depends(require_admin), db: Session = Depe
     audit(db, admin.id, "settlement.paid", "settlement", sid, net=s.net_pesewas)
     db.commit()
     return {"ok": True}
-
-
-class FacilityIn(BaseModel):
-    name: str
-    kind: str
-    address: str
-    city: str | None = None
-    region: str | None = None
-    country: str = "GH"
-    phone: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
-    services: list[str] = []
-    specialties: list[str] = []
-    hours: dict = {}
-    has_emergency: bool = False
 
 
 @router.post("/facilities", status_code=201)

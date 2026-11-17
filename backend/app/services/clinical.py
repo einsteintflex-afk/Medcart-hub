@@ -22,6 +22,18 @@ def is_abnormal(kind: str, v: float, v2: float | None = None) -> bool:
     }.get(kind, lambda: False)()
 
 
+# ILLUSTRATIVE formulary for the info screens. Replace/extend with a licensed source reviewed by a pharmacist.
+DRUGS = {
+    "paracetamol": {"use": "Pain and fever", "side_effects": ["Rare at normal doses"], "warnings": ["Do not exceed the labelled daily maximum", "Liver damage risk in overdose or with heavy alcohol use"], "ask_pharmacist_if": "you have liver disease, drink alcohol regularly, or take other medicines containing paracetamol"},
+    "ibuprofen": {"use": "Pain, inflammation and fever", "side_effects": ["Stomach upset", "Heartburn"], "warnings": ["Take with food", "Avoid in stomach ulcers, kidney disease and late pregnancy"], "ask_pharmacist_if": "you take blood thinners, blood-pressure medicines or have asthma"},
+    "amoxicillin": {"use": "Bacterial infections (antibiotic)", "side_effects": ["Diarrhoea", "Nausea", "Rash"], "warnings": ["Do not use if allergic to penicillin", "Finish the course exactly as prescribed"], "ask_pharmacist_if": "you have had a rash or swelling with any antibiotic"},
+    "artemether-lumefantrine": {"use": "Uncomplicated malaria", "side_effects": ["Headache", "Dizziness", "Loss of appetite"], "warnings": ["Take with fatty food or milk", "Complete all doses even if you feel better"], "ask_pharmacist_if": "you are pregnant, breastfeeding or have heart rhythm problems"},
+    "metformin": {"use": "Type 2 diabetes", "side_effects": ["Nausea", "Diarrhoea", "Metallic taste"], "warnings": ["Take with meals", "Stop and seek care if vomiting/dehydrated"], "ask_pharmacist_if": "you have kidney problems or are having a contrast scan"},
+    "amlodipine": {"use": "High blood pressure, angina", "side_effects": ["Ankle swelling", "Flushing", "Headache"], "warnings": ["Do not stop suddenly without advice"], "ask_pharmacist_if": "you take other blood-pressure or heart medicines"},
+    "lisinopril": {"use": "High blood pressure, heart failure", "side_effects": ["Dry cough", "Dizziness"], "warnings": ["Swelling of face/lips needs emergency care", "Avoid in pregnancy"], "ask_pharmacist_if": "you take potassium supplements or anti-inflammatory painkillers"},
+    "oral rehydration salts": {"use": "Replacing fluid lost in diarrhoea", "side_effects": ["Rare"], "warnings": ["Mix exactly as the packet says", "Seek care for babies, blood in stool or fever"], "ask_pharmacist_if": "the person is very young, elderly or not improving in 24 hours"},
+}
+
 INTERACTIONS = {
     frozenset({"warfarin", "aspirin"}): ("major", "Increased bleeding risk."),
     frozenset({"warfarin", "ibuprofen"}): ("major", "Increased bleeding risk."),

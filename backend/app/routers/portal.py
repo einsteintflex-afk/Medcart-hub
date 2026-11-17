@@ -1,8 +1,9 @@
 """Dashboard-oriented endpoints for patient, professional, facility-admin and admin portals."""
 from datetime import timedelta
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -10,7 +11,7 @@ from ..config import get_settings
 from ..db import get_db, utcnow
 from ..deps import current_user, require_admin, require_roles, verified_professional
 from ..models import (AccessGrant, Appointment, Availability, Complaint, Consultation, ConsultStatus, Contribution, ContribStatus,
-                      CreditEntry, Facility, LabRequest, Language, Medication, Notification, Payment, PROFESSIONAL_ROLES, Prescription,
+                      CreditEntry, Facility, LabRequest, Language, Medication, Notification, Payment, Prescription,
                       ProviderProfile, Role, Settlement, Subscription, User, VitalReading)
 from ..services import credits, reminders
 from ..services.audit import audit
@@ -66,7 +67,7 @@ def my_grants(u: User = Depends(current_user), db: Session = Depends(get_db)):
 @router.get("/consultations/{cid}")
 def consult_detail(cid: int, u: User = Depends(current_user), db: Session = Depends(get_db)):
     c = db.get(Consultation, cid)
-    if not c or (u.id not in (c.patient_id, c.provider_id) and u.role != Role.admin):
+    if not c or u.id not in (c.patient_id, c.provider_id):
         raise HTTPException(404)
     other = db.get(User, c.provider_id if u.id == c.patient_id else c.patient_id)
     rx = db.scalars(select(Prescription).where(Prescription.consultation_id == cid)).all()
@@ -155,12 +156,43 @@ def patient_summary(pid: int, u: User = Depends(verified_professional()), db: Se
 
 
 # ------------------------------------------------------------------ facility admin
+FacilityKind = Literal["hospital", "clinic", "pharmacy", "laboratory", "diagnostic", "specialist"]
+Name200 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+Text100 = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
+TextList = Annotated[list[Text100], Field(max_length=50)]
+
+
+class FacilityIn(BaseModel):
+    name: Name200
+    kind: FacilityKind
+    address: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+    city: Text100 | None = None
+    region: Text100 | None = None
+    country: Annotated[str, StringConstraints(pattern=r"^[A-Z]{2}$")] = "GH"
+    phone: Annotated[str, StringConstraints(pattern=r"^\+?[0-9 ()-]{5,20}$")] | None = None
+    latitude: Annotated[float, Field(ge=-90, le=90)] | None = None
+    longitude: Annotated[float, Field(ge=-180, le=180)] | None = None
+    services: TextList = []
+    specialties: TextList = []
+    hours: Annotated[dict[Text100, Text100], Field(max_length=14)] = {}
+    has_emergency: bool = False
+
+
+class FacilityPatch(BaseModel):
+    name: Name200 | None = None
+    address: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)] | None = None
+    city: Text100 | None = None
+    region: Text100 | None = None
+    phone: Annotated[str, StringConstraints(pattern=r"^\+?[0-9 ()-]{5,20}$")] | None = None
+    services: TextList | None = None
+    specialties: TextList | None = None
+    hours: Annotated[dict[Text100, Text100], Field(max_length=14)] | None = None
+    has_emergency: bool | None = None
+
+
 @router.post("/facilities/mine", status_code=201)
-def create_my_facility(body: dict, u: User = Depends(require_roles(Role.facility_admin)), db: Session = Depends(get_db)):
-    allowed = {"name", "kind", "address", "city", "region", "country", "phone", "latitude", "longitude", "services", "specialties", "hours", "has_emergency"}
-    if not {"name", "kind", "address"} <= body.keys():
-        raise HTTPException(422, "name, kind, address required")
-    f = Facility(**{k: v for k, v in body.items() if k in allowed}, admin_user_id=u.id, verified=False)  # hidden until admin verifies
+def create_my_facility(body: FacilityIn, u: User = Depends(require_roles(Role.facility_admin)), db: Session = Depends(get_db)):
+    f = Facility(**body.model_dump(), admin_user_id=u.id, verified=False)  # hidden until an admin verifies it
     db.add(f)
     db.commit()
     return {"id": f.id, "verified": False}
@@ -174,12 +206,12 @@ def my_facilities(u: User = Depends(require_roles(Role.facility_admin)), db: Ses
 
 
 @router.patch("/facilities/mine/{fid}")
-def update_my_facility(fid: int, body: dict, u: User = Depends(require_roles(Role.facility_admin)), db: Session = Depends(get_db)):
+def update_my_facility(fid: int, body: FacilityPatch, u: User = Depends(require_roles(Role.facility_admin)), db: Session = Depends(get_db)):
     f = db.get(Facility, fid)
     if not f or f.admin_user_id != u.id:
         raise HTTPException(404)
-    for k in {"name", "address", "phone", "services", "specialties", "hours", "has_emergency", "city", "region"} & body.keys():
-        setattr(f, k, body[k])
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(f, k, v)
     audit(db, u.id, "facility.update", "facility", fid)
     db.commit()
     return {"ok": True}
@@ -209,7 +241,7 @@ def _page(q, db, limit, offset):
 
 
 @router.get("/admin/users")
-def admin_users(q: str | None = None, role: str | None = None, limit: int = 50, offset: int = 0,
+def admin_users(q: Annotated[str, Query(max_length=100)] | None = None, role: Literal["patient", "doctor", "pharmacist", "nurse", "lab", "facility_admin", "admin"] | None = None, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0, le=1_000_000),
                 admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     s = select(User).order_by(User.id.desc())
     if q:
@@ -221,7 +253,7 @@ def admin_users(q: str | None = None, role: str | None = None, limit: int = 50, 
 
 
 @router.get("/admin/providers")
-def admin_providers(status: str | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_providers(status: Literal["pending", "approved", "rejected", "suspended"] | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     s = select(User, ProviderProfile).join(ProviderProfile, ProviderProfile.user_id == User.id)
     if status:
         s = s.where(ProviderProfile.status == status)
@@ -231,7 +263,7 @@ def admin_providers(status: str | None = None, admin: User = Depends(require_adm
 
 
 @router.get("/admin/consultations")
-def admin_consults(status: str | None = None, limit: int = 100, offset: int = 0, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_consults(status: Literal["awaiting_payment", "requested", "accepted", "in_progress", "completed", "rejected", "cancelled", "refunded"] | None = None, limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0, le=1_000_000), admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     s = select(Consultation).order_by(Consultation.id.desc())
     if status:
         s = s.where(Consultation.status == ConsultStatus(status))
@@ -240,14 +272,14 @@ def admin_consults(status: str | None = None, limit: int = 100, offset: int = 0,
 
 
 @router.get("/admin/appointments")
-def admin_appts(limit: int = 100, offset: int = 0, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_appts(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0, le=1_000_000), admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     s = select(Appointment).order_by(Appointment.starts_at.desc())
     return [{"id": a.id, "patient_id": a.patient_id, "provider_id": a.provider_id, "facility_id": a.facility_id, "starts_at": a.starts_at,
              "status": a.status} for a in _page(s, db, limit, offset)]
 
 
 @router.get("/admin/payments")
-def admin_payments(status: str | None = None, limit: int = 100, offset: int = 0, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_payments(status: Literal["pending", "succeeded", "failed", "refunded"] | None = None, limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0, le=1_000_000), admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     s = select(Payment).order_by(Payment.id.desc())
     if status:
         s = s.where(Payment.status == status)
@@ -264,8 +296,8 @@ def admin_subs(admin: User = Depends(require_admin), db: Session = Depends(get_d
 class GrantSubIn(BaseModel):
     user_id: int
     plan: str
-    days: int = 30
-    reason: str
+    days: Annotated[int, Field(ge=1, le=366)] = 30
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 
 
 @router.post("/admin/subscriptions/grant", status_code=201)
@@ -326,7 +358,7 @@ def resolve_complaint(cid: int, note: str, admin: User = Depends(require_admin),
 
 
 @router.get("/admin/contributions")
-def admin_contribs(status: str | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_contribs(status: Literal["draft", "submitted", "approved", "rejected", "withdrawn"] | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     s = select(Contribution).order_by(Contribution.id.desc()).limit(200)
     if status:
         s = s.where(Contribution.status == ContribStatus(status))
@@ -381,7 +413,7 @@ def admin_settings(admin: User = Depends(require_admin)):
 
 
 @router.get("/admin/reports/trends")
-def trends(days: int = 30, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def trends(days: int = Query(30, ge=1, le=366), admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     since = utcnow() - timedelta(days=days)
     rev: dict[str, int] = {}
     for p in db.scalars(select(Payment).where(Payment.status == "succeeded", Payment.created_at >= since)):

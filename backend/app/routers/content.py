@@ -7,7 +7,6 @@ from ..db import get_db
 from ..deps import current_user, verified_professional
 from ..models import Contribution, ContribStatus, CreditEntry, ProviderProfile, User
 from ..services import credits
-from ..services.audit import audit
 
 router = APIRouter(tags=["content"])
 KINDS = {"article", "research", "education", "answer", "campaign"}

@@ -40,7 +40,31 @@ def refill_reminders(db: Session) -> int:
     return n
 
 
+def medication_due(db: Session, window_minutes: int = 30) -> int:
+    """Notify for each dose time that has just passed (within the window) and hasn't been reminded yet."""
+    from zoneinfo import ZoneInfo
+    from ..config import get_settings
+    tz = ZoneInfo(get_settings().timezone)
+    now_utc = utcnow()
+    now_local = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
+    n = 0
+    for m in db.scalars(select(Medication).where(Medication.active)):
+        for t in m.times_of_day or []:
+            try:
+                hh, mm = (int(x) for x in t.split(":"))
+            except ValueError:
+                continue
+            due_local = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            due_utc = due_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+            if due_utc <= now_utc < due_utc + timedelta(minutes=window_minutes) and (m.last_reminded_at is None or m.last_reminded_at < due_utc):
+                notify(db, m.patient_id, "medication_reminder", "Medication reminder", f"Time to take {m.name} {m.dose or ''}".strip())
+                m.last_reminded_at = now_utc
+                n += 1
+                break
+    return n
+
+
 def run_all(db: Session) -> dict:
-    r = {"appointments": appointment_reminders(db), "subscriptions": subscription_expiry(db), "refills": refill_reminders(db)}
+    r = {"appointments": appointment_reminders(db), "subscriptions": subscription_expiry(db), "refills": refill_reminders(db), "medications": medication_due(db)}
     db.commit()
     return r

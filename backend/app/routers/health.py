@@ -3,18 +3,21 @@ import io
 from datetime import datetime, timedelta
 from statistics import mean
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db, utcnow
 from ..deps import current_user, verified_professional
-from ..models import (AccessGrant, HealthRecord, LabRequest, Medication, PROFESSIONAL_ROLES, Prescription, Role, User, VitalReading)
+from ..models import (StoredFile, AccessGrant, HealthRecord, LabRequest, Medication, PROFESSIONAL_ROLES, Prescription, Role, User, VitalReading)
 from ..services.audit import audit
 from ..services.clinical import UNITS, check_interactions, is_abnormal
 from ..services.notifications import notify
+from .files import require_owned
 
 router = APIRouter(tags=["health"])
 RECORD_CATEGORIES = {"history", "diagnosis", "medication", "allergy", "consultation", "prescription", "lab", "imaging",
@@ -76,7 +79,7 @@ def _vital_rows(db, pid, kind=None, days=30):
 
 
 @router.get("/patients/{pid}/vitals")
-def vitals(pid: int, kind: str | None = None, days: int = 30, u: User = Depends(current_user), db: Session = Depends(get_db)):
+def vitals(pid: int, kind: str | None = None, days: int = Query(30, ge=1, le=3650), u: User = Depends(current_user), db: Session = Depends(get_db)):
     if not _grant_ok(db, pid, u, "vitals"):
         raise HTTPException(403, "The patient has not shared this data with you")
     if u.id != pid:
@@ -104,7 +107,7 @@ def summary(period: str = "week", u: User = Depends(current_user), db: Session =
 
 
 @router.get("/vitals/report.csv")
-def report_csv(days: int = 30, u: User = Depends(current_user), db: Session = Depends(get_db)):
+def report_csv(days: int = Query(30, ge=1, le=3650), u: User = Depends(current_user), db: Session = Depends(get_db)):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["measured_at", "kind", "value", "value2", "unit", "abnormal", "source"])
@@ -128,6 +131,7 @@ class RecordIn(BaseModel):
 def add_record(body: RecordIn, u: User = Depends(current_user), db: Session = Depends(get_db)):
     if body.category not in RECORD_CATEGORIES:
         raise HTTPException(422, f"category must be one of {sorted(RECORD_CATEGORIES)}")
+    require_owned(db, body.document_key, u, {"record", "symptom_photo"})
     r = HealthRecord(patient_id=u.id, category=body.category, title=body.title, body=body.body,
                      document_key=body.document_key, author_id=u.id, recorded_on=body.recorded_on or utcnow())
     db.add(r)
@@ -139,14 +143,14 @@ def add_record(body: RecordIn, u: User = Depends(current_user), db: Session = De
 
 @router.get("/patients/{pid}/records")
 def records(pid: int, category: str | None = None, u: User = Depends(current_user), db: Session = Depends(get_db)):
-    if u.id != pid and u.role != Role.admin and not (_grant_ok(db, pid, u, category) if category else _any_grant(db, pid, u)):
+    if u.id != pid and not (_grant_ok(db, pid, u, category) if category else _any_grant(db, pid, u)):
         raise HTTPException(403, "The patient has not shared these records with you")
     q = select(HealthRecord).where(HealthRecord.patient_id == pid)
     if category:
         q = q.where(HealthRecord.category == category)
     rows = db.scalars(q.order_by(HealthRecord.recorded_on.desc())).all()
     if u.id != pid:  # keep only categories the grant allows
-        rows = [r for r in rows if _grant_ok(db, pid, u, r.category) or u.role == Role.admin]
+        rows = [r for r in rows if _grant_ok(db, pid, u, r.category)]
     audit(db, u.id, "record.read", "health_record", patient_id=pid, count=len(rows))
     db.commit()
     return [{"id": r.id, "category": r.category, "title": r.title, "body": r.body, "document_key": r.document_key,
@@ -156,7 +160,7 @@ def records(pid: int, category: str | None = None, u: User = Depends(current_use
 class GrantIn(BaseModel):
     provider_id: int
     categories: list[str] = ["*"]
-    days: int | None = 30
+    days: Annotated[int, Field(ge=1, le=3650)] | None = 30
 
 
 @router.post("/access-grants", status_code=201)
@@ -226,6 +230,25 @@ def interactions(drugs: str, u: User = Depends(current_user)):
             "disclaimer": "Limited automated check; absence of a warning does not mean a combination is safe."}
 
 
+@router.get("/drugs")
+def drug_search(q: str = "", u: User = Depends(current_user)):
+    from ..services.clinical import DRUGS
+    hits = {k: v for k, v in DRUGS.items() if q.lower() in k}
+    return {"results": [{"name": k, **v} for k, v in sorted(hits.items())],
+            "disclaimer": "General information only; follow your prescriber's or pharmacist's advice for your situation."}
+
+
+@router.get("/patients/{pid}/medications")
+def patient_medications(pid: int, u: User = Depends(verified_professional(Role.doctor, Role.pharmacist, Role.nurse)), db: Session = Depends(get_db)):
+    """Medication history for a pharmacist/doctor/nurse. Requires the patient's consent."""
+    if not _grant_ok(db, pid, u, "medication"):
+        raise HTTPException(403, "The patient has not shared their medications with you")
+    audit(db, u.id, "medications.read", "medication", patient_id=pid)
+    db.commit()
+    return [{"name": m.name, "dose": m.dose, "times_of_day": m.times_of_day, "active": m.active}
+            for m in db.scalars(select(Medication).where(Medication.patient_id == pid))]
+
+
 @router.get("/prescriptions")
 def my_rx(u: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(Prescription).where(Prescription.patient_id == u.id).order_by(Prescription.id.desc())).all()
@@ -268,7 +291,7 @@ def lab_list(u: User = Depends(current_user), db: Session = Depends(get_db)):
         q = select(LabRequest).where(LabRequest.status != "resulted")
     else:
         q = select(LabRequest).where(LabRequest.patient_id == u.id)
-    return [{"id": r.id, "tests": r.tests, "status": r.status, "result_text": r.result_text if u.role != Role.lab else None,
+    return [{"id": r.id, "tests": r.tests, "status": r.status, "result_text": r.result_text if u.role != Role.lab else None, "result_document_key": r.result_document_key if u.role != Role.lab else None,
              "patient_id": r.patient_id, "scheduled_for": r.scheduled_for} for r in db.scalars(q.order_by(LabRequest.id.desc()))]
 
 
@@ -284,6 +307,11 @@ def lab_result(lid: int, body: LabResultIn, u: User = Depends(verified_professio
         raise HTTPException(404)
     if not (body.result_text or body.result_document_key):
         raise HTTPException(422, "result required")
+    require_owned(db, body.result_document_key, u, {"lab"})
+    if body.result_document_key:
+        lf = db.scalar(select(StoredFile).where(StoredFile.key == body.result_document_key))
+        if lf.patient_id != r.patient_id:
+            raise HTTPException(422, "File belongs to a different patient")
     r.result_text, r.result_document_key, r.resulted_by, r.status = body.result_text, body.result_document_key, u.id, "resulted"
     db.add(HealthRecord(patient_id=r.patient_id, category="lab", title=f"Lab result: {', '.join(r.tests)}",
                         body=body.result_text, document_key=body.result_document_key, author_id=u.id))

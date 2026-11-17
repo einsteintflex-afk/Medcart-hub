@@ -63,7 +63,7 @@ export function Settings({ onLang }: { onLang: (l: string) => void }) {
     <h1>{t("settings")}</h1>
     <Section title="Language & audio"><div className="card"><label htmlFor="lg">Interface language</label>
       <select id="lg" value={i18n.language} onChange={e => onLang(e.target.value)}>{LANGS.map(([c, n]) => <option key={c} value={c}>{n}</option>)}</select>
-      <table><thead><tr><th>Language</th><th>Speech-to-text</th><th>Spoken replies</th><th>Human interpreter</th></tr></thead><tbody>{langs?.map(l => <tr key={l.code}><td>{l.name}</td><td>{l.stt ? "✔" : "soon"}</td><td>{l.tts ? "✔" : "soon"}</td><td>{l.human_interpreter ? "✔" : "—"}</td></tr>)}</tbody></table>
+      <div style={{ overflowX: "auto" }}><table><thead><tr><th>Language</th><th>Speech-to-text</th><th>Spoken replies</th><th>Human interpreter</th></tr></thead><tbody>{langs?.map(l => <tr key={l.code}><td>{l.name}</td><td>{l.stt ? "✔" : "soon"}</td><td>{l.tts ? "✔" : "soon"}</td><td>{l.human_interpreter ? "✔" : "—"}</td></tr>)}</tbody></table></div>
       <small className="muted">Translations are automated and labelled. Never rely on them alone for dosage or emergency decisions.</small></div></Section>
     <Section title="Profile"><div className="card"><div className="grid">
       {([["full_name", "Full name"], ["phone", "Phone"], ["city", "City"], ["region", "Region"], ["emergency_contact_name", "Emergency contact name"], ["emergency_contact_phone", "Emergency contact phone"], ["allergies", "Allergies (comma separated)"]] as const)
@@ -83,5 +83,18 @@ export function Notifications() {
     {data?.map(n => <div className="card" key={n.id} style={{ marginTop: 8, borderLeft: n.read ? undefined : "5px solid var(--teal)" }}><b>{n.title}</b> <small className="muted">{dt(n.created_at)}</small><div>{n.body}</div>
       {!n.read && <button onClick={() => act.run(() => api(`/notifications/${n.id}/read`, { method: "POST" }))}>Mark read</button>}</div>)}
     {data?.length === 0 && <p className="muted">No notifications.</p>}
+  </>);
+}
+
+export function Drugs() {
+  const [q, setQ] = useState(""); const { data } = useFetch<any>(`/drugs?q=${encodeURIComponent(q)}`, [q]); const { data: pharm } = useFetch<any[]>("/facilities?kind=pharmacy");
+  return (<>
+    <h1>Drug information</h1>
+    <label htmlFor="q">Search a medicine</label><input id="q" value={q} onChange={e => setQ(e.target.value)} placeholder="e.g. paracetamol" />
+    {data?.results.map((r: any) => <article className="card" key={r.name} style={{ marginBottom: 8 }}><h3 style={{ margin: 0, textTransform: "capitalize" }}>{r.name}</h3>
+      <p><b>Used for:</b> {r.use}</p><p><b>Common side effects:</b> {r.side_effects.join(", ")}</p><p><b>Important:</b> {r.warnings.join(" · ")}</p><p><b>Ask a pharmacist if</b> {r.ask_pharmacist_if}.</p></article>)}
+    {data?.results.length === 0 && <p className="muted">No match in our guide. Ask a pharmacist.</p>}
+    <small className="muted">{data?.disclaimer}</small>
+    <Section title="Pharmacies near you">{pharm?.map(f => <div className="card" key={f.id}><b>{f.name}</b> · {f.address} · {f.phone}</div>)}{pharm?.length === 0 && <p className="muted">No pharmacies listed yet.</p>}</Section>
   </>);
 }

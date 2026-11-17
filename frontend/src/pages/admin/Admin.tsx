@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, ghs } from "../../api";
 import { Badge, Err, Section, Stat, Table, d, dt, useAction, useFetch } from "../../ui";
+import { FileLink } from "../../files";
 
 export function Overview() {
   const { data: ops } = useFetch<any>("/admin/reports/operational"); const { data: fin } = useFetch<any>("/admin/reports/financial"); const act = useAction(); const [r, setR] = useState<any>(null);
@@ -15,7 +16,7 @@ export function Verification() {
   const { data, reload } = useFetch<any[]>("/admin/providers/pending"); const { data: all, reload: r2 } = useFetch<any[]>("/admin/providers"); const act = useAction(() => { reload(); r2(); });
   return (<><h1>Professional verification</h1><Err msg={act.err} />
     <Section title={`Pending (${data?.length ?? 0})`}>{data?.map(p => <div className="card" key={p.id} style={{ marginBottom: 8 }}><b>{p.name}</b> <Badge>{p.role}</Badge> {p.email}
-      <ul>{p.credentials.map((c: any) => <li key={c.id}>{c.kind}: {c.issuer} #{c.number} {c.document_key && <code>{c.document_key}</code>}</li>)}</ul>
+      <ul>{p.credentials.map((c: any) => <li key={c.id}>{c.kind}: {c.issuer} #{c.number} {c.document_key ? <FileLink fileKey={c.document_key} label="View document" /> : <Badge warn>no document</Badge>}</li>)}</ul>
       <small className="muted">Check each number against the issuing council's public register and the person's ID before approving.</small>
       <div className="row"><button className="primary" onClick={() => act.run(() => api(`/admin/providers/${p.id}/review`, { body: { approve: true, can_prescribe: false } }))}>Approve</button>
         {p.role === "doctor" && <button onClick={() => act.run(() => api(`/admin/providers/${p.id}/review`, { body: { approve: true, can_prescribe: true } }))}>Approve + allow prescribing</button>}
@@ -99,6 +100,12 @@ export function Complaints() {
   const { data, reload } = useFetch<any[]>("/admin/complaints"); const act = useAction(reload);
   return (<><h1>Complaints</h1><Err msg={act.err} /><Table rows={data} cols={[{ head: "Date", cell: r => dt(r.created_at) }, { head: "From", cell: r => `#${r.user_id}` }, { head: "About", cell: r => r.about_user_id ? `#${r.about_user_id}` : "—" }, { head: "Complaint", cell: r => r.body }, { head: "Status", cell: r => <Badge warn={r.status === "open"}>{r.status}</Badge> },
     { head: "", cell: r => r.status === "open" && <button className="primary" onClick={() => { const n = prompt("Resolution note"); if (n) act.run(() => api(`/admin/complaints/${r.id}/resolve?note=${encodeURIComponent(n)}`, { method: "POST" })); }}>Resolve</button> }]} /></>);
+}
+
+export function Interpreters() {
+  const { data, reload } = useFetch<any[]>("/admin/interpreter-requests"); const act = useAction(reload);
+  return (<><h1>Human interpreter requests</h1><Err msg={act.err} /><Table rows={data} cols={[{ head: "Date", cell: r => dt(r.created_at) }, { head: "Consultation", cell: r => `#${r.consultation_id}` }, { head: "Language", cell: r => r.language }, { head: "Reason", cell: r => r.reason ?? "—" }, { head: "Status", cell: r => <Badge warn={r.status === "open"}>{r.status}</Badge> },
+    { head: "", cell: r => r.status === "open" && <button className="primary" onClick={() => { const n = prompt("Message to the requester (e.g. interpreter name/time)"); if (n !== null) act.run(() => api(`/admin/interpreter-requests/${r.id}/close?note=${encodeURIComponent(n)}`, { method: "POST" })); }}>Mark handled</button> }]} /></>);
 }
 
 export function Languages() {

@@ -7,13 +7,13 @@ import { useFetch } from "./ui";
 type Item = [string, string];
 export function navFor(role: string, t: (k: string) => string, status?: string): Item[] {
   if (role === "patient") return [["/app", "🏠 " + t("home")], ["/app/consult", "🩺 " + t("consultations")], ["/app/appointments", "📅 " + t("appointments")],
-    ["/app/monitoring", "❤️ " + t("monitoring")], ["/app/records", "📁 " + t("records")], ["/app/medications", "💊 " + t("medications")], ["/app/labs", "🧪 " + t("labs")],
+    ["/app/monitoring", "❤️ " + t("monitoring")], ["/app/records", "📁 " + t("records")], ["/app/medications", "💊 " + t("medications")], ["/app/labs", "🧪 " + t("labs")], ["/app/drugs", "💊 Drug information"],
     ["/app/facilities", "🏥 " + t("facilities")], ["/app/education", "📚 " + t("education")], ["/app/assistant", "🤖 " + t("assistant")],
     ["/app/billing", "💳 " + t("billing")], ["/app/notifications", "🔔 " + t("notifications")], ["/app/settings", "⚙️ " + t("settings")]];
   if (role === "admin") return [["/admin", "📊 Overview"], ["/admin/verification", "✅ Verification"], ["/admin/users", "👥 Users"], ["/admin/moderation", "📝 Moderation"],
     ["/admin/transactions", "💰 Transactions"], ["/admin/subscriptions", "🔁 Subscriptions"], ["/admin/consultations", "🩺 Consultations"], ["/admin/appointments", "📅 Appointments"],
     ["/admin/facilities", "🏥 Facilities"], ["/admin/labs", "🧪 Labs"], ["/admin/credits", "⭐ Credits"], ["/admin/complaints", "📣 Complaints"],
-    ["/admin/languages", "🌍 Languages"], ["/admin/reports", "📈 Reports"], ["/admin/audit", "🔍 Audit log"], ["/admin/settings", "⚙️ Settings"]];
+    ["/admin/interpreters", "🧑‍🤝‍🧑 Interpreters"], ["/admin/languages", "🌍 Languages"], ["/admin/reports", "📈 Reports"], ["/admin/audit", "🔍 Audit log"], ["/admin/settings", "⚙️ Settings"]];
   if (status && status !== "approved")  // unverified professionals can only manage their application
     return [["/pro", "🏠 Overview"], ["/pro/profile", "🪪 Profile & verification"], ["/pro/notifications", "🔔 Notifications"]];
   const base: Item[] = [["/pro", "🏠 Overview"]];

@@ -35,7 +35,12 @@ def create_payment(db: Session, user: User, purpose: str, method: str, idempoten
     if existing:
         if existing.user_id != user.id:
             raise PermissionError("idempotency key conflict")
-        return existing, None
+        return existing, existing.checkout_url
+    if consultation:  # one open payment per consultation: reuse it instead of letting the patient pay twice
+        open_p = db.scalar(select(Payment).where(Payment.consultation_id == consultation.id, Payment.user_id == user.id,
+                                                 Payment.status == PaymentStatus.pending))
+        if open_p:
+            return open_p, open_p.checkout_url
     # Amount is ALWAYS computed server-side.
     amount = consultation.fee_pesewas if consultation else price_for(purpose)
     p = Payment(reference=f"MC-{uuid.uuid4().hex[:20]}", idempotency_key=idempotency_key, user_id=user.id,
@@ -52,6 +57,7 @@ def create_payment(db: Session, user: User, purpose: str, method: str, idempoten
         p.status, p.failure_reason = PaymentStatus.failed, str(e)[:200]
         return p, None
     p.provider_txn_id = ch.txn_id
+    p.checkout_url = ch.checkout_url
     audit(db, user.id, "payment.create", "payment", p.id, purpose=purpose, amount=amount)
     return p, ch.checkout_url
 
@@ -98,9 +104,15 @@ def _fulfil(db: Session, p: Payment) -> None:
         _extend(db, p.user_id, "professional", "payment", p.id)
     elif p.purpose == "consultation":
         c = db.get(Consultation, p.consultation_id)
-        if c and c.status == ConsultStatus.awaiting_payment:
-            c.status = ConsultStatus.requested
-            notify(db, c.provider_id, "consult_request", "New consultation request", f"Consultation #{c.id} is paid and awaiting you.")
+        if not c or c.status != ConsultStatus.awaiting_payment:
+            # Already paid (or cancelled): the provider must NOT be credited a second time. Flag for refund.
+            p.failure_reason = "duplicate_payment_needs_refund"
+            audit(db, None, "payment.duplicate", "payment", p.id, consultation_id=p.consultation_id)
+            notify(db, p.user_id, "duplicate_payment", "Duplicate payment received",
+                   "This consultation was already paid. Our team will refund the extra payment.")
+            return
+        c.status = ConsultStatus.requested
+        notify(db, c.provider_id, "consult_request", "New consultation request", f"Consultation #{c.id} is paid and awaiting you.")
         commission = p.amount_pesewas * s.platform_commission_bps // 10000
         db.add(Settlement(provider_id=c.provider_id, payment_id=p.id, gross_pesewas=p.amount_pesewas,
                           commission_pesewas=commission, net_pesewas=p.amount_pesewas - commission))
