@@ -1,0 +1,23 @@
+:root { --navy:#0b2545; --teal:#0e9aa7; --teal-d:#0a7a85; --grey:#f2f4f7; --text:#14213d; --danger:#b42318; --ok:#067647; }
+* { box-sizing: border-box; }
+body { margin:0; font: 18px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--text); background:var(--grey); }
+header { background:var(--navy); color:#fff; padding:12px 16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+header a, header button, header select { color:#fff; }
+header .brand { font-weight:700; font-size:1.3rem; margin-right:auto; }
+select { font-size:1rem; padding:6px; border-radius:8px; }
+main { max-width:960px; margin:0 auto; padding:16px; }
+.banner { background:#fff4ed; border-left:6px solid var(--danger); padding:10px 14px; font-weight:600; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+.card { background:#fff; border-radius:14px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.tile { display:block; text-decoration:none; color:var(--navy); font-weight:600; min-height:88px; border:2px solid transparent; }
+.tile:hover, .tile:focus-visible { border-color:var(--teal); outline:none; }
+button.primary, a.primary { background:var(--teal); color:#fff; border:0; border-radius:10px; padding:12px 18px; font-size:1rem; cursor:pointer; text-decoration:none; display:inline-block; }
+button.primary:hover { background:var(--teal-d); }
+input, textarea { width:100%; font-size:1rem; padding:10px; border:1px solid #c5ccd6; border-radius:8px; margin:4px 0 12px; }
+label { font-weight:600; }
+.badge { padding:2px 10px; border-radius:99px; font-size:.85rem; background:#d1fadf; color:var(--ok); }
+.badge.warn { background:#fee4e2; color:var(--danger); }
+.msg { padding:10px 14px; border-radius:12px; margin:8px 0; max-width:85%; white-space:pre-wrap; }
+.msg.user { background:#d7f0f3; margin-left:auto; } .msg.bot { background:#fff; } .msg.emergency { background:var(--danger); color:#fff; font-weight:700; font-size:1.1rem; }
+.error { color:var(--danger); } table { width:100%; border-collapse:collapse; } td,th { text-align:left; padding:6px; border-bottom:1px solid #e4e7ec; }
+:focus-visible { outline:3px solid var(--teal); outline-offset:2px; }

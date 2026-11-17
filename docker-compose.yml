@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_USER: medcart, POSTGRES_PASSWORD: medcart, POSTGRES_DB: medcart }
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7
+  api:
+    build: ./backend
+    environment:
+      MEDCART_DATABASE_URL: postgresql+psycopg://medcart:medcart@db:5432/medcart
+      MEDCART_REDIS_URL: redis://redis:6379/0
+      MEDCART_JWT_SECRET: ${MEDCART_JWT_SECRET:?set a long random secret}
+      MEDCART_FINCORE_MODE: ${MEDCART_FINCORE_MODE:-simulator}
+      MEDCART_FINCORE_API_KEY: ${MEDCART_FINCORE_API_KEY:-}
+      MEDCART_FINCORE_WEBHOOK_SECRET: ${MEDCART_FINCORE_WEBHOOK_SECRET:-}
+      MEDCART_ANTHROPIC_API_KEY: ${MEDCART_ANTHROPIC_API_KEY:-}
+    ports: ["8000:8000"]
+    depends_on: [db, redis]
+volumes: { pgdata: {} }
