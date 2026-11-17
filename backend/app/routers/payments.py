@@ -10,7 +10,7 @@ from ..db import get_db
 from ..deps import current_user, require_admin
 from ..models import (Consultation, ConsultStatus, Payment, PROFESSIONAL_ROLES, Role, Settlement, Subscription, User, WebhookEvent)
 from ..services import payments as svc
-from ..services.fincore import FincoreError, verify_webhook_signature
+from ..services.paystack import PaystackError, verify_webhook_signature
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -46,43 +46,45 @@ def checkout(body: CheckoutIn, idempotency_key: str = Header(min_length=8, max_l
 
 @router.post("/{reference}/verify")
 def verify(reference: str, u: User = Depends(current_user), db: Session = Depends(get_db)):
-    """Client may ask the server to re-check; the SERVER asks Fincore. Client claims are never trusted."""
+    """Client may ask the server to re-check; the SERVER asks Paystack. Client claims are never trusted."""
     p = db.scalar(select(Payment).where(Payment.reference == reference))
     if not p or (p.user_id != u.id and u.role != Role.admin):
         raise HTTPException(404, "Not found")
     try:
         p = svc.fulfil_if_verified(db, reference)
-    except FincoreError:
+    except PaystackError:
         raise HTTPException(502, "Payment provider unavailable")
     db.commit()
     return {"reference": p.reference, "status": p.status.value}
 
 
-@router.post("/webhooks/fincore")
-async def fincore_webhook(request: Request, x_fincore_signature: str = Header(""), x_fincore_timestamp: str = Header(""),
-                          db: Session = Depends(get_db)):
-    raw = await request.body()
-    if not verify_webhook_signature(raw, x_fincore_timestamp, x_fincore_signature):
+@router.post("/webhooks/paystack")
+async def paystack_webhook(request: Request, x_paystack_signature: str = Header(""), db: Session = Depends(get_db)):
+    raw = await request.body()  # signature is over the raw bytes, so read them before any parsing
+    if not verify_webhook_signature(raw, x_paystack_signature):
         raise HTTPException(401, "Bad signature")
     try:
         event = json.loads(raw)
-        event_id, etype, ref = event["id"], event["type"], event["data"]["reference"]
-    except (ValueError, KeyError, TypeError):
+        etype, data = event["event"], event["data"]
+        ref = data.get("reference")
+        # Paystack sends no event id: dedupe on event type + transaction id (fallback: reference).
+        event_id = f"{etype}:{data.get('id') or ref}"[:80]
+    except (ValueError, KeyError, TypeError, AttributeError):
         raise HTTPException(400, "Malformed event")
     try:  # idempotency: duplicate deliveries are acknowledged and ignored
         with db.begin_nested():
-            db.add(WebhookEvent(event_id=event_id, event_type=etype, payload=event))
+            db.add(WebhookEvent(event_id=event_id, event_type=etype[:40], payload=event))
             db.flush()
     except IntegrityError:
         return {"status": "duplicate"}
-    if etype.startswith("charge."):
+    if etype in ("charge.success", "charge.failed") and ref:
         try:
-            svc.fulfil_if_verified(db, ref)  # re-verifies with Fincore; webhook body is only a trigger
+            svc.fulfil_if_verified(db, ref)  # re-verifies via Paystack's verify API; the body is only a trigger
         except LookupError:
-            pass
-        except FincoreError:
+            pass  # not one of our payments
+        except PaystackError:
             db.rollback()
-            raise HTTPException(503, "retry later")  # non-2xx makes Fincore redeliver
+            raise HTTPException(503, "retry later")  # non-2xx makes Paystack redeliver
     db.commit()
     return {"status": "ok"}
 
@@ -121,7 +123,7 @@ def refund(payment_id: int, reason: str, admin: User = Depends(require_admin), d
         raise HTTPException(404)
     try:
         svc.refund_payment(db, p, admin.id, reason)
-    except (ValueError, FincoreError) as e:
+    except (ValueError, PaystackError) as e:
         raise HTTPException(400, str(e))
     db.commit()
     return {"ok": True}

@@ -1,7 +1,7 @@
 # MedCart — Digital Healthcare Platform (Ghana-first)
 
 FastAPI + PostgreSQL backend, React/TypeScript frontend. Run: `docker compose up` (API :8000), `cd frontend && npm i && npm run dev`.
-Tests: `cd backend && pip install -r requirements.txt && pytest` (21 tests).
+Tests: `cd backend && pip install -r requirements.txt && pytest` (23 tests).
 
 ## Implemented
 Auth (register/verify/login/lockout/reset/RBAC), admin-gated professional verification, provider search, consultations
@@ -9,13 +9,15 @@ Auth (register/verify/login/lockout/reset/RBAC), admin-gated professional verifi
 summaries + CSV, EHR with patient-controlled access grants and patient-visible access log, medications + interaction check,
 labs, facility finder, emergency info, notifications, deterministic emergency screening + guarded AI assistant,
 contribution credits (append-only ledger, 0.8/approval, duplicate/quality rules, reversal, 120-unit renewal computed server-side),
-Fincore payments (server-side verification, HMAC webhooks with replay window, idempotency, refunds, commission/settlements, reconciliation),
+Paystack payments (hosted checkout for MoMo/card, server-side verify, HMAC-SHA512 webhooks, idempotency, refunds, commission/settlements, reconciliation),
 admin dashboards/reports/audit logs, 6-language UI shell.
 
 ## NOT production-ready yet — required before launch
-1. **Fincore API contract** was not provided. `services/fincore.py` follows generic gateway conventions and must be matched to the real API
-   (endpoints, signature scheme, MoMo flows). The simulator is blocked when `MEDCART_ENV=production`. Fincore itself (a payment
-   system) needs its own licensing/compliance (Bank of Ghana PSP rules) — it is an integration here, not a built ledger.
+1. **Paystack go-live**: set `MEDCART_PAYMENT_MODE=live` and `MEDCART_PAYSTACK_SECRET_KEY`; in the Paystack dashboard set the webhook URL to
+   `https://<api-host>/api/v1/payments/webhooks/paystack` and enable Ghana mobile money (MTN, Telecel, AT) and cards on your business.
+   The live client was written from Paystack's public docs and has only been tested against a simulator: run it end-to-end with
+   `sk_test_` keys first. Provider payouts are tracked in our `settlements` table and paid out manually/by transfer for now
+   (Paystack Transfers or split subaccounts could automate this). The simulator is blocked when `MEDCART_ENV=production`.
 2. **Regulatory/legal**: Ghana Data Protection Act 2012 (registration with the Data Protection Commission), telemedicine rules of the
    Medical & Dental Council / Pharmacy Council, e-prescribing legality, consent text, terms. Needs counsel.
 3. **Clinical sign-off**: vital thresholds, emergency keyword lists, and the drug-interaction table are illustrative. Use a licensed

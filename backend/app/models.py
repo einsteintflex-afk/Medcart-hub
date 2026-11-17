@@ -359,7 +359,7 @@ class Payment(Base):
     currency: Mapped[str] = mapped_column(String(3), default="GHS")
     method: Mapped[str | None] = mapped_column(String(24))  # mtn_momo|telecel_cash|at_money|card
     status: Mapped[PaymentStatus] = mapped_column(Enum(PaymentStatus), default=PaymentStatus.pending)
-    fincore_txn_id: Mapped[str | None] = mapped_column(String(80))
+    provider_txn_id: Mapped[str | None] = mapped_column(String(80))
     failure_reason: Mapped[str | None] = mapped_column(String(200))
     fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

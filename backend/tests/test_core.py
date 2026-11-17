@@ -4,7 +4,7 @@ import time
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Facility
-from app.services.fincore import _sim, sign
+from app.services.paystack import _sim, sign
 from .conftest import PW, pay, register_patient, register_pro, settle_and_verify
 
 
@@ -38,7 +38,7 @@ def test_subscription_requires_server_verified_payment(client):
     h = register_patient(client)
     p = pay(client, h, "patient_subscription")
     assert p["amount_pesewas"] == 6000  # GH₵60, set by server
-    # Not paid at Fincore yet: verify must NOT activate.
+    # Not paid at Paystack yet: verify must NOT activate.
     client.post(f"/api/v1/payments/{p['reference']}/verify", headers=h)
     assert client.get("/api/v1/payments/subscription", headers=h).json()["active"] is False
     settle_and_verify(client, h, p["reference"])
@@ -52,30 +52,42 @@ def test_checkout_idempotent(client):
     assert a["reference"] == b["reference"]
 
 
-def _webhook(client, ref, event_id="evt_1", secret=None, ts=None):
-    body = json.dumps({"id": event_id, "type": "charge.succeeded", "data": {"reference": ref}}).encode()
-    ts = ts or str(int(time.time()))
-    sig = sign(secret or get_settings().fincore_webhook_secret, ts, body)
-    return client.post("/api/v1/payments/webhooks/fincore", content=body,
-                       headers={"X-Fincore-Signature": sig, "X-Fincore-Timestamp": ts, "Content-Type": "application/json"})
+def _webhook(client, ref, event="charge.success", txn_id=555, secret=None):
+    body = json.dumps({"event": event, "data": {"id": txn_id, "reference": ref}}).encode()
+    sig = sign(secret or get_settings().paystack_secret_key, body)
+    return client.post("/api/v1/payments/webhooks/paystack", content=body,
+                       headers={"x-paystack-signature": sig, "Content-Type": "application/json"})
 
 
 def test_webhook_signature_and_idempotency(client):
     h = register_patient(client)
     p = pay(client, h, "patient_subscription")
     assert _webhook(client, p["reference"], secret="wrong").status_code == 401
-    assert _webhook(client, p["reference"], ts=str(int(time.time()) - 3600)).status_code == 401  # replay
-    # Valid signature but Fincore has not settled: webhook alone must not unlock service.
-    assert _webhook(client, p["reference"], event_id="evt_a").status_code == 200
+    assert client.post("/api/v1/payments/webhooks/paystack", content=b"{}").status_code == 401  # unsigned
+    # Valid signature but Paystack's verify API says not paid: webhook alone must not unlock service.
+    assert _webhook(client, p["reference"], txn_id=1).status_code == 200
     assert client.get("/api/v1/payments/subscription", headers=h).json()["active"] is False
     _sim.settle(p["reference"])
-    assert _webhook(client, p["reference"], event_id="evt_b").status_code == 200
-    assert _webhook(client, p["reference"], event_id="evt_b").json()["status"] == "duplicate"
+    assert _webhook(client, p["reference"], txn_id=2).status_code == 200
+    assert _webhook(client, p["reference"], txn_id=2).json()["status"] == "duplicate"
     assert client.get("/api/v1/payments/subscription", headers=h).json()["active"] is True
     from sqlalchemy import func, select
     from app.models import Subscription
     with SessionLocal() as db:
         assert db.scalar(select(func.count(Subscription.id))) == 1  # fulfilled exactly once
+
+
+def test_webhook_for_unknown_reference_is_ignored(client):
+    assert _webhook(client, "not-ours").status_code == 200
+
+
+def test_live_gateway_mapping_and_signature():
+    from app.services.paystack import _STATUS, verify_webhook_signature
+    assert _STATUS["success"] == "succeeded" and "abandoned" not in _STATUS  # abandoned stays pending
+    body = b'{"event":"charge.success"}'
+    assert verify_webhook_signature(body, sign("sk_test_dummy", body))
+    assert not verify_webhook_signature(body, sign("sk_test_dummy", body + b" "))
+    assert len(sign("k", b"x")) == 128  # HMAC-SHA512 hex
 
 
 def test_doctor_consult_needs_separate_payment_and_splits_commission(client, admin):
@@ -109,6 +121,7 @@ def test_refund_reverses_settlement(client, admin):
     with SessionLocal() as db:
         payment_id = db.scalar(select(Payment.id).where(Payment.reference == p["reference"]))
     assert client.post(f"/api/v1/payments/admin/{payment_id}/refund", headers=admin, params={"reason": "declined"}).status_code == 200
+    assert p["reference"] in _sim.refunds
     assert client.get("/api/v1/payments/earnings", headers=dh).json()["pending_net_pesewas"] == 0
     assert client.post(f"/api/v1/payments/admin/{payment_id}/refund", headers=admin, params={"reason": "again"}).status_code == 400
 

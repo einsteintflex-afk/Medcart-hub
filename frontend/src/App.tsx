@@ -11,6 +11,7 @@ import Providers from "./pages/Providers";
 import ProDashboard from "./pages/ProDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
 import Emergency from "./pages/Emergency";
+import PaymentComplete from "./pages/PaymentComplete";
 
 export type Me = { id: number; full_name: string; role: string; preferred_language: string; verification_status?: string };
 
@@ -40,6 +41,7 @@ export default function App() {
       <main id="main">
         <Routes>
           <Route path="/login" element={<Auth onLogin={m => { setMe(m); nav(m.role === "patient" ? "/app" : m.role === "admin" ? "/admin" : "/pro"); }} />} />
+          <Route path="/payment/complete" element={me ? <PaymentComplete /> : <Navigate to="/login" />} />
           <Route path="/emergency" element={<Emergency />} />
           <Route path="/app" element={me ? <PatientHome me={me} /> : <Navigate to="/login" />} />
           <Route path="/assistant" element={me ? <Assistant /> : <Navigate to="/login" />} />

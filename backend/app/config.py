@@ -31,12 +31,10 @@ class Settings(BaseSettings):
     credit_renewal_threshold_tenths: int = 1200  # 120 units
     min_contribution_chars: int = 400
 
-    # Fincore
-    fincore_base_url: str = "https://api.fincore.example"
-    fincore_api_key: str = ""
-    fincore_webhook_secret: str = ""
-    fincore_webhook_tolerance_seconds: int = 300
-    fincore_mode: str = "simulator"  # "simulator" (dev/test only) | "live"
+    # Paystack (the same secret key authenticates API calls and signs webhooks; never ship it to the frontend)
+    paystack_secret_key: str = ""
+    payment_mode: str = "simulator"  # "simulator" (dev/test only) | "live"
+    payment_callback_url: str = "http://localhost:5173/payment/complete"
 
     # AI
     anthropic_api_key: str = ""

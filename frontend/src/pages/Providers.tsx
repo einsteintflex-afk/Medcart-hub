@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api, ghs } from "../api";
+import { api, ghs, startPayment } from "../api";
 
 export default function Providers() {
   const [sp] = useSearchParams();
@@ -13,8 +13,7 @@ export default function Providers() {
     try {
       const c = await api("/consultations", { body: { provider_id: p.id, channel: "text", concern: "Consultation request" } });
       if (c.next === "pay") {
-        const pay = await api("/payments/checkout", { body: { purpose: "consultation", method: "mtn_momo", consultation_id: c.id }, headers: { "Idempotency-Key": crypto.randomUUID() } });
-        setMsg(`Approve the ${ghs(pay.amount_pesewas)} payment on your phone. The doctor is notified once payment is verified.`);
+        setMsg(await startPayment({ purpose: "consultation", method: "mtn_momo", consultation_id: c.id }));
       } else setMsg("Request sent.");
     } catch (e: any) { setMsg(e.message); }
   }

@@ -1,6 +1,6 @@
 """Payment creation, verification and fulfilment.
 
-Services are fulfilled ONLY from `fulfil_if_verified`, which re-queries Fincore server-side and checks
+Services are fulfilled ONLY from `fulfil_if_verified`, which re-queries Paystack server-side and checks
 amount/currency/status. Frontend 'payment done' signals and webhook bodies alone never unlock anything.
 Fulfilment is idempotent (Payment.fulfilled_at) and race-safe (row lock on PostgreSQL).
 """
@@ -14,7 +14,7 @@ from ..config import get_settings
 from ..db import utcnow
 from ..models import (Consultation, ConsultStatus, Payment, PaymentStatus, Refund, Settlement, Subscription, User)
 from .audit import audit
-from .fincore import FincoreError, get_gateway
+from .paystack import PaystackError, get_gateway
 from .notifications import notify
 
 METHODS = {"mtn_momo", "telecel_cash", "at_money", "card"}
@@ -45,11 +45,13 @@ def create_payment(db: Session, user: User, purpose: str, method: str, idempoten
     db.flush()
     try:
         ch = get_gateway().create_charge(reference=p.reference, amount_pesewas=amount, currency=p.currency,
-                                         method=method, customer_phone=user.phone, idempotency_key=idempotency_key)
-    except FincoreError as e:
+                                         method=method, email=user.email, customer_phone=user.phone,
+                                         callback_url=get_settings().payment_callback_url,
+                                         metadata={"payment_id": p.id, "purpose": purpose}, idempotency_key=idempotency_key)
+    except PaystackError as e:
         p.status, p.failure_reason = PaymentStatus.failed, str(e)[:200]
         return p, None
-    p.fincore_txn_id = ch.txn_id
+    p.provider_txn_id = ch.txn_id
     audit(db, user.id, "payment.create", "payment", p.id, purpose=purpose, amount=amount)
     return p, ch.checkout_url
 
@@ -71,7 +73,7 @@ def fulfil_if_verified(db: Session, reference: str) -> Payment:
         return p
     if ch.status != "succeeded":
         return p
-    p.status, p.fulfilled_at, p.fincore_txn_id = PaymentStatus.succeeded, utcnow(), ch.txn_id
+    p.status, p.fulfilled_at, p.provider_txn_id = PaymentStatus.succeeded, utcnow(), ch.txn_id
     _fulfil(db, p)
     notify(db, p.user_id, "payment_confirmed", "Payment confirmed",
            f"We received GH₵{p.amount_pesewas / 100:.2f}. Receipt: {p.reference}")
@@ -112,7 +114,7 @@ def has_active_subscription(db: Session, user_id: int, plan: str = "patient") ->
 def refund_payment(db: Session, p: Payment, actor_id: int, reason: str) -> Refund:
     if p.status != PaymentStatus.succeeded:
         raise ValueError("Only succeeded payments can be refunded")
-    get_gateway().refund(txn_id=p.fincore_txn_id, amount_pesewas=p.amount_pesewas, idempotency_key=f"refund-{p.reference}")
+    get_gateway().refund(reference=p.reference, amount_pesewas=p.amount_pesewas)
     p.status = PaymentStatus.refunded
     r = Refund(payment_id=p.id, amount_pesewas=p.amount_pesewas, reason=reason, actor_id=actor_id)
     db.add(r)
@@ -132,19 +134,19 @@ def refund_payment(db: Session, p: Payment, actor_id: int, reason: str) -> Refun
 
 
 def reconciliation(db: Session) -> dict:
-    """Compare our ledger with Fincore for pending/succeeded payments; report discrepancies."""
+    """Compare our ledger with Paystack for pending/succeeded payments; report discrepancies."""
     gw = get_gateway()
     issues = []
     for p in db.scalars(select(Payment).where(Payment.status.in_([PaymentStatus.pending, PaymentStatus.succeeded]))):
         try:
             ch = gw.get_charge(p.reference)
-        except FincoreError:
-            issues.append({"reference": p.reference, "issue": "missing_at_fincore"})
+        except PaystackError:
+            issues.append({"reference": p.reference, "issue": "missing_at_paystack"})
             continue
         if ch.status == "succeeded" and p.status == PaymentStatus.pending:
-            issues.append({"reference": p.reference, "issue": "paid_at_fincore_not_fulfilled"})
+            issues.append({"reference": p.reference, "issue": "paid_at_paystack_not_fulfilled"})
         if ch.status != "succeeded" and p.status == PaymentStatus.succeeded:
-            issues.append({"reference": p.reference, "issue": "fulfilled_but_not_paid_at_fincore"})
+            issues.append({"reference": p.reference, "issue": "fulfilled_but_not_paid_at_paystack"})
         if ch.amount_pesewas != p.amount_pesewas:
             issues.append({"reference": p.reference, "issue": "amount_mismatch"})
     gross = db.scalar(select(func.coalesce(func.sum(Payment.amount_pesewas), 0)).where(Payment.status == PaymentStatus.succeeded))

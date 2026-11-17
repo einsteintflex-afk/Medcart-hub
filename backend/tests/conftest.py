@@ -3,7 +3,7 @@ import tempfile
 
 _dir = tempfile.mkdtemp()
 os.environ["MEDCART_DATABASE_URL"] = f"sqlite:///{_dir}/t.db"
-os.environ["MEDCART_FINCORE_WEBHOOK_SECRET"] = "whsec_test"
+os.environ["MEDCART_PAYSTACK_SECRET_KEY"] = "sk_test_dummy"
 os.environ["MEDCART_MIN_CONTRIBUTION_CHARS"] = "50"
 
 import pytest
@@ -13,7 +13,7 @@ from app.db import Base, SessionLocal, engine
 from app.main import app
 from app.models import Facility, Role, User
 from app.security import hash_password
-from app.services.fincore import _sim
+from app.services.paystack import _sim
 
 PW = "Str0ngPassword!"
 

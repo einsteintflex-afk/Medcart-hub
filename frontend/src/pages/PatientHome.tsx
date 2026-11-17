@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { api, ghs } from "../api";
+import { api, startPayment } from "../api";
 import type { Me } from "../App";
 
 export default function PatientHome({ me }: { me: Me }) {
@@ -13,13 +13,7 @@ export default function PatientHome({ me }: { me: Me }) {
 
   async function subscribe() {
     setMsg("");
-    try {
-      const p = await api("/payments/checkout", { body: { purpose: "patient_subscription", method: "mtn_momo" }, headers: { "Idempotency-Key": crypto.randomUUID() } });
-      setMsg(`Approve the ${ghs(p.amount_pesewas)} prompt on your phone. Reference ${p.reference}`);
-      // Service is unlocked only after the SERVER verifies the payment with Fincore.
-      const poll = setInterval(async () => { const v = await api(`/payments/${p.reference}/verify`, { method: "POST" }); if (v.status !== "pending") { clearInterval(poll); load(); } }, 4000);
-      setTimeout(() => clearInterval(poll), 120000);
-    } catch (e: any) { setMsg(e.message); }
+    try { setMsg(await startPayment({ purpose: "patient_subscription", method: "mtn_momo" })); } catch (e: any) { setMsg(e.message); }
   }
   const tiles: [string, string][] = [["/providers?role=pharmacist", t("talkPharmacist")], ["/providers?role=doctor", t("consultDoctor")], ["/monitoring", t("monitoring")],
     ["/assistant", t("assistant")], ["/emergency", t("emergency")]];
