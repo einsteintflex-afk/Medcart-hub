@@ -13,6 +13,7 @@ const en = {
   send: "Send", askHealth: "Describe how you feel…", listen: "Listen", translated: "Automatically translated — confirm important information with your clinician.",
   emergencyBanner: "Not a substitute for emergency services. In an emergency call 112.", save: "Save",
   bp: "Blood pressure", glucose: "Blood glucose", heart_rate: "Heart rate", abnormal: "Outside usual range",
+  home: "Home", consultations: "Consultations", education: "Health education", billing: "Billing", notifications: "Notifications", settings: "Settings",
   verified: "Verified", pending: "Pending verification", credits: "Contribution credits", ledger: "Credit ledger",
 };
 const fr: typeof en = { ...en, login: "Se connecter", register: "Créer un compte", email: "E-mail", password: "Mot de passe", logout: "Déconnexion",
@@ -33,6 +34,9 @@ const es: typeof en = { ...en, login: "Iniciar sesión", register: "Crear cuenta
   askHealth: "Describa cómo se siente…", listen: "Escuchar", translated: "Traducido automáticamente: confirme la información importante con su profesional.",
   emergencyBanner: "No sustituye a los servicios de emergencia. En una emergencia llame al 112.", save: "Guardar",
   bp: "Presión arterial", glucose: "Glucosa en sangre", heart_rate: "Frecuencia cardíaca", abnormal: "Fuera del rango habitual" };
+const fr2 = { home: "Accueil", consultations: "Consultations", education: "Éducation santé", billing: "Facturation", notifications: "Notifications", settings: "Paramètres" };
+const es2 = { home: "Inicio", consultations: "Consultas", education: "Educación en salud", billing: "Facturación", notifications: "Notificaciones", settings: "Ajustes" };
+Object.assign(fr, fr2); Object.assign(es, es2);
 const tw: Partial<typeof en> = { login: "Hyɛ mu", register: "Yɛ akɔnt", email: "Email", password: "Password", logout: "Fi mu", language: "Kasa",
   talkPharmacist: "Kasa kyerɛ ɔduruyɛfoɔ", consultDoctor: "Hu ɔdɔkota", emergency: "Ɔhaw ntɛm", send: "Soma", save: "Kora" };
 const fat: Partial<typeof en> = { login: "Hyɛ mu", register: "Yɛ akɔnt", logout: "Fi mu", language: "Kasa", emergency: "Ɔhaw ntsiir", send: "Tsie", save: "Kora" };

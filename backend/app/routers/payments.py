@@ -44,6 +44,23 @@ def checkout(body: CheckoutIn, idempotency_key: str = Header(min_length=8, max_l
             "status": p.status.value, "checkout_url": url}
 
 
+@router.post("/dev/simulate/{reference}")
+def dev_simulate(reference: str, u: User = Depends(current_user), db: Session = Depends(get_db)):
+    """DEV ONLY: stands in for the customer approving on Paystack. Doesn't exist in live mode or production."""
+    from ..config import get_settings
+    from ..services.paystack import _sim
+    s = get_settings()
+    if s.payment_mode != "simulator" or s.env == "production":
+        raise HTTPException(404)
+    p = db.scalar(select(Payment).where(Payment.reference == reference, Payment.user_id == u.id))
+    if not p:
+        raise HTTPException(404)
+    _sim.settle(reference)
+    svc.fulfil_if_verified(db, reference)
+    db.commit()
+    return {"status": "succeeded"}
+
+
 @router.post("/{reference}/verify")
 def verify(reference: str, u: User = Depends(current_user), db: Session = Depends(get_db)):
     """Client may ask the server to re-check; the SERVER asks Paystack. Client claims are never trusted."""

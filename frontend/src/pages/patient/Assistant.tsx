@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { api } from "../api";
+import { api } from "../../api";
 
 type Msg = { role: "user" | "assistant"; content: string; emergency?: boolean };
 export default function Assistant() {

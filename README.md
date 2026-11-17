@@ -1,7 +1,28 @@
 # MedCart — Digital Healthcare Platform (Ghana-first)
 
-FastAPI + PostgreSQL backend, React/TypeScript frontend. Run: `docker compose up` (API :8000), `cd frontend && npm i && npm run dev`.
-Tests: `cd backend && pip install -r requirements.txt && pytest` (23 tests).
+FastAPI + PostgreSQL backend, React/TypeScript frontend. ## Run locally
+```
+cd backend && pip install -r requirements.txt
+export MEDCART_DATABASE_URL=sqlite:///./dev.db MEDCART_PAYSTACK_SECRET_KEY=sk_test_x   # simulator payments
+python -m scripts.seed            # DEV demo data (password for all: Demo-Passw0rd!)
+uvicorn app.main:app --port 8000
+cd ../frontend && npm i && npm run dev   # http://localhost:5173
+```
+Demo logins (`@example.com`): `patient@`, `doctor@`, `pharmacist@`, `lab@`, `facility@`, `pending.doctor@`, `admin@`.
+In simulator mode the "Pay" buttons show a confirm dialog standing in for the Paystack checkout page.
+
+**Tests:** `cd backend && pytest` (32 API tests). Browser tests (need Playwright, both servers running + seeded DB):
+`node e2e/smoke.js` (every page, every role) and `node e2e/journey.js` (subscribe → pay → consult → prescribe → earnings → emergency AI).
+
+## Dashboards
+- **Patient** (13 pages): home overview, consultations (search/filter/compare, request, chat, rate), appointments, health monitoring (charts, weekly/monthly
+  summaries, CSV), health record + sharing controls + access history, medications (+interactions, refill flags), labs, facility finder, health education,
+  AI assistant, billing/receipts, notifications, settings (language, profile, complaints).
+- **Professional** (role-specific menus for doctor, pharmacist, nurse, lab, facility admin): overview, consultations workspace (chat, notes, prescriptions,
+  referrals, follow-ups), appointments, patients (only with patient consent), availability, profile & verification status, earnings & subscription,
+  contributions + credit ledger + renewal, lab results queue, facility management. Unverified professionals see only their application.
+- **Admin** (16 pages): overview, credential verification, users, content moderation, transactions (+refunds, reconciliation, settlements), subscriptions,
+  consultations, appointments, facilities, labs, credits ledger/adjustments, complaints, languages, reports, audit log, settings.
 
 ## Implemented
 Auth (register/verify/login/lockout/reset/RBAC), admin-gated professional verification, provider search, consultations

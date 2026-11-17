@@ -20,5 +20,9 @@ export const ghs = (pesewas: number) => `GH₵${(pesewas / 100).toFixed(2)}`;
 export async function startPayment(body: Record<string, unknown>): Promise<string> {
   const p = await api("/payments/checkout", { body, headers: { "Idempotency-Key": crypto.randomUUID() } });
   if (p.checkout_url?.startsWith("https://")) { window.location.href = p.checkout_url; return ""; }
+  if (p.checkout_url?.startsWith("/simulator/")) {  // dev simulator only
+    if (confirm(`DEV SIMULATOR: approve payment of ${ghs(p.amount_pesewas)}?`)) { await api(`/payments/dev/simulate/${p.reference}`, { method: "POST" }); window.location.reload(); }
+    return "";
+  }
   return `Payment ${p.reference} created for ${ghs(p.amount_pesewas)} (simulator mode: no checkout page).`;
 }

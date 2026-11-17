@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from .db import Base, SessionLocal, engine
 from .models import Language
-from .routers import admin, auth, consultations, content, health, misc, payments, providers
+from .routers import admin, auth, consultations, content, health, misc, payments, portal, providers
 
 LANGS = [("en", "English", True, True), ("tw", "Twi", False, False), ("ha", "Hausa", False, False),
          ("fat", "Fante", False, False), ("fr", "Français", True, True), ("es", "Español", True, True)]
@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MedCart API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
-for r in (auth, providers, consultations, health, content, payments, admin, misc):
+for r in (auth, providers, consultations, health, content, payments, admin, portal, misc):
     app.include_router(r.router, prefix="/api/v1")
 
 
